@@ -29,11 +29,20 @@ git pull
 Si cambió un `package.json`, correr `npm install` en la carpeta de ese robot.
 
 ## Monitor
-Cada robot reporta en PROD a `robot_status` / `robot_eventos`. guías y digitadores necesitan en su `.env`:
+Cada robot reporta en PROD a `robot_status` / `robot_eventos` (Supabase kkzo). Dos formas, en el `.env` del robot:
+
+| Modo | Para | `.env` |
+|---|---|---|
+| A · service_role | PCs que ya la tienen (citas, MiMo) | nada extra |
+| B · token | PCs sin service_role (guías, digitadores) | `MONITOR_SUPABASE_URL`, `MONITOR_SUPABASE_KEY` = **anon**, `MONITOR_TOKEN` |
+
+Token nuevo (uno por PC):
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\Users\jcotuc\source\repos\hpc-robots\nuevo-token-robot.ps1 -Nota "PC guias"
 ```
-MONITOR_SUPABASE_URL=https://kkzovradqpptmsaakqlb.supabase.co
-MONITOR_SUPABASE_KEY=<service_role de kkzo>
-```
+El token solo puede escribir en el monitor (función `robot_reportar`). Revocar: `update public.robot_tokens set activo = false where nota = 'PC guias';`
+
+SQL (una vez, en orden): `monitor\01_robot_monitor.sql`, `monitor\02_robot_reportar.sql`.
 Opcional: `ROBOT_PC=Nombre a mostrar` · `MONITOR_APAGADO=1`.
 
 ## Reglas

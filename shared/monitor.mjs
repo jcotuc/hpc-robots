@@ -1,11 +1,13 @@
 // monitor.mjs — reporta al Dungeon de Robots (Supabase: robot_status / robot_eventos).
 // Mismo archivo en cada robot. NUNCA lanza errores ni detiene al robot.
-// .env: MONITOR_SUPABASE_URL / MONITOR_SUPABASE_KEY (si faltan usa SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)
+// .env, modo A: MONITOR_SUPABASE_URL / MONITOR_SUPABASE_KEY = service_role (si faltan usa SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)
+//       modo B (PC sin service_role): MONITOR_SUPABASE_URL, MONITOR_SUPABASE_KEY = anon key, MONITOR_TOKEN = token del robot
 //       ROBOT_PC (opcional, nombre a mostrar) · MONITOR_APAGADO=1 para no reportar
 import os from 'node:os'
 
 const URL_ = (process.env.MONITOR_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '')
 const KEY = process.env.MONITOR_SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+const TOKEN = (process.env.MONITOR_TOKEN || '').trim()
 const PC = (process.env.ROBOT_PC || os.hostname()).trim().toUpperCase()
 const LLAMADA_RE = /\bLL[A-Z]?\d+-\d+\b/i
 const corto = (x) => String(x?.message || x || '').split('\n')[0].slice(0, 500)
@@ -32,13 +34,19 @@ export function crearMonitor(robot, { intervaloSeg = 180, activo = true } = {}) 
       }
     })
   }
+  // Con token: todo pasa por la función robot_reportar (anon key). Sin token: escribe directo (service_role)
+  const enviar = (tipo, body) => (TOKEN
+    ? post('rpc/robot_reportar', { p_token: TOKEN, p_tipo: tipo, p_datos: body })
+    : tipo === 'estado'
+      ? post('robot_status?on_conflict=robot,pc', body, 'resolution=merge-duplicates,return=minimal')
+      : post('robot_eventos', body))
   const estado = (est, detalle = null, llamada = null, err) => {
     const body = { robot, pc: PC, estado: est, detalle: detalle ? corto(detalle) : null, llamada, intervalo_seg: intervaloSeg }
     if (err !== undefined) body.ultimo_error = corto(err)
-    post('robot_status?on_conflict=robot,pc', body, 'resolution=merge-duplicates,return=minimal')
+    enviar('estado', body)
   }
   const evento = (tipo, llamada = null, mensaje = null) =>
-    post('robot_eventos', { robot, pc: PC, tipo, llamada, mensaje: mensaje ? corto(mensaje) : null })
+    enviar('evento', { robot, pc: PC, tipo, llamada, mensaje: mensaje ? corto(mensaje) : null })
 
   const trabajando = (llamada = null, detalle = 'Procesando') => estado('trabajando', detalle, llamada)
   const ok = (llamada = null, mensaje = null) => evento('ok', llamada, mensaje)
