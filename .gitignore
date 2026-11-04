@@ -1,0 +1,12 @@
+# Dependencias y secretos
+node_modules/
+.env
+# Estado local de cada PC robot (no se versiona)
+logs/
+capturas/
+registro.json
+.sync.lock
+prueba.json
+# Grabaciones de Playwright codegen (pueden traer datos reales)
+grabaciones/
+*.antes-monitor

@@ -1,0 +1,17 @@
+{
+  "name": "hpc-mimo-worker",
+  "private": true,
+  "type": "module",
+  "description": "Crea en CSHP las llamadas de servicio de los equipos de MiMO en estado Pendiente",
+  "scripts": {
+    "sync": "node --env-file=.env sync-mimo.mjs --qa --visible",
+    "sync:buscar": "node --env-file=.env sync-mimo.mjs --qa --visible --solo-buscar",
+    "sync:prod": "node --env-file=.env sync-mimo.mjs --prod",
+    "sync:auto": "node --env-file=.env sync-mimo.mjs",
+    "probar": "node --env-file=.env probar-conexion.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "playwright": "^1.61.1"
+  }
+}

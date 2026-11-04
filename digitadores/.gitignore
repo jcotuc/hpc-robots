@@ -1,0 +1,7 @@
+node_modules
+.env
+capturas/
+logs/
+registro.json
+.sync.lock
+prueba.json

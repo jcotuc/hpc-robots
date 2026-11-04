@@ -1,0 +1,21 @@
+{
+  "name": "hpc-guias",
+  "private": true,
+  "type": "module",
+  "description": "Cambia status e imprime guía y diagnóstico de las llamadas de CSHP (HPCS016 / 106)",
+  "scripts": {
+    "listar": "node --env-file=.env imprimir-guias.mjs --qa --solo-listar",
+    "listar:prod": "node --env-file=.env imprimir-guias.mjs --prod --solo-listar",
+    "probar-visor": "node --env-file=.env imprimir-guias.mjs --qa --probar-visor",
+    "probar-visor:prod": "node --env-file=.env imprimir-guias.mjs --prod --probar-visor",
+    "qa": "node --env-file=.env imprimir-guias.mjs --qa --lento",
+    "prod": "node --env-file=.env imprimir-guias.mjs --prod",
+    "auto": "node --env-file=.env imprimir-guias.mjs",
+    "probar-impresoras": "node --env-file=.env probar-impresoras.mjs",
+    "log": "node ver-log.mjs",
+    "vivo": "node ver-vivo.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.64.1"
+  }
+}

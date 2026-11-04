@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dungeon de Robots HPC</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0d0b12; --panel:#17131f; --line:#2c2438; --text:#e9e3f2; --muted:#9a8fae;
+  --ok:#4ade80; --wait:#60a5fa; --err:#f87171; --dead:#6b6475; --gold:#f5c542;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:16px;border-bottom:2px solid var(--line);background:linear-gradient(#1b1525,#120e18)}
+h1{font-family:"Press Start 2P",monospace;font-size:16px;margin:0;color:var(--gold);letter-spacing:1px}
+.sub{font-size:12px;color:var(--muted);margin-top:6px}
+.kpis{display:flex;gap:8px;flex-wrap:wrap}
+.kpi{background:var(--panel);border:2px solid var(--line);padding:8px 12px;font-family:"Press Start 2P",monospace;font-size:10px;display:flex;gap:8px;align-items:center}
+.dot{width:10px;height:10px;display:inline-block}
+.tools{display:flex;gap:8px;align-items:center}
+button{font-family:"Press Start 2P",monospace;font-size:9px;background:var(--panel);color:var(--text);border:2px solid var(--line);padding:8px 10px;cursor:pointer}
+button:hover{border-color:var(--gold)}
+.demo{font-family:"Press Start 2P",monospace;font-size:9px;color:#111;background:var(--gold);padding:6px 8px}
+main{display:grid;grid-template-columns:1fr 320px;gap:16px;padding:16px}
+@media (max-width:980px){main{grid-template-columns:1fr}}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.room{background:var(--panel);border:2px solid var(--line);position:relative}
+.room.error{border-color:var(--err);animation:pulse 1s infinite}
+.room.caido{border-color:#3a3442}
+@keyframes pulse{50%{box-shadow:0 0 18px rgba(248,113,113,.55)}}
+canvas{display:block;width:100%;image-rendering:pixelated;image-rendering:crisp-edges;background:#000}
+.info{padding:10px 12px;display:grid;gap:6px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.name{font-family:"Press Start 2P",monospace;font-size:11px}
+.badge{font-family:"Press Start 2P",monospace;font-size:8px;padding:5px 6px;color:#111}
+.meta{font-size:12px;color:var(--muted)}
+.det{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.err-txt{font-size:11px;color:var(--err);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stats{display:flex;gap:12px;font-size:12px}
+.stats b{font-family:"Press Start 2P",monospace;font-size:10px}
+aside{background:var(--panel);border:2px solid var(--line);display:flex;flex-direction:column;max-height:calc(100vh - 120px);position:sticky;top:16px}
+aside h2{font-family:"Press Start 2P",monospace;font-size:10px;margin:0;padding:12px;border-bottom:2px solid var(--line);color:var(--gold)}
+#log{overflow:auto;padding:8px 12px;display:grid;gap:6px;font-size:12px}
+.ev{display:grid;grid-template-columns:52px 1fr;gap:6px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.ev time{color:var(--muted);font-variant-numeric:tabular-nums}
+.ev .t-ok{color:var(--ok)} .ev .t-error{color:var(--err)} .ev .t-info{color:var(--wait)}
+.empty{color:var(--muted);font-size:12px;padding:8px 0}
+@media (max-width:480px){header{padding:12px 16px}h1{font-size:12px}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>DUNGEON DE ROBOTS</h1>
+    <div class="sub" id="sub">HPC · Centros de Servicio</div>
+  </div>
+  <div class="kpis" id="kpis"></div>
+  <div class="tools">
+    <span class="demo" id="demoTag" hidden>MODO DEMO</span>
+    <button id="snd">SONIDO: OFF</button>
+  </div>
+</header>
+<main>
+  <section class="grid" id="grid"></section>
+  <aside><h2>BITÁCORA EN VIVO</h2><div id="log"><div class="empty">Sin eventos todavía</div></div></aside>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script>
+/* ================== CONFIG ==================
+   Deja vacío para MODO DEMO. Usa la ANON key (solo lectura por RLS). */
+const SUPABASE_URL = 'https://kkzovradqpptmsaakqlb.supabase.co'; // proyecto de citas / MiMo
+const SUPABASE_ANON_KEY = ''; // Supabase → Project Settings → API → anon public
+
+/* Robots esperados: si uno nunca reporta, aparece "SIN DATOS". id = el que usa Monitor("id") */
+/* horario = el de su tarea programada (programar-tarea.cmd), hora Guatemala. Fuera de horario = DURMIENDO, no CAÍDO */
+const LS = [1, 2, 3, 4, 5, 6]; // lunes a sábado
+const ROBOTS = [
+  { id: 'citas',       nombre: 'Citas',       color: '#f5c542', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
+  { id: 'guias',       nombre: 'Guías',       color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '18:00' } },
+  { id: 'mimo',        nombre: 'MiMo',        color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
+  { id: 'digitadores', nombre: 'Digitadores', color: '#2dd4bf', horario: { dias: LS, desde: '07:00', hasta: '18:00' } },
+  // { id: 'garantias', nombre: 'Garantías', color: '#c084fc', horario: { dias: LS, desde: '07:00', hasta: '18:00' } },
+];
+const GRACIA_SEG = 90; // margen extra antes de declarar "caído" (intervalo*2 + gracia)
+/* ============================================ */
+
+const ESTADOS = {
+  trabajando: { txt: 'TRABAJANDO', c: 'var(--ok)'   },
+  esperando:  { txt: 'ESPERANDO',  c: 'var(--wait)' },
+  error:      { txt: 'ERROR',      c: 'var(--err)'  },
+  caido:      { txt: 'CAÍDO',      c: 'var(--dead)' },
+  durmiendo:  { txt: 'DURMIENDO',  c: '#a78bfa'     },
+  sindatos:   { txt: 'SIN DATOS',  c: 'var(--dead)' },
+};
+const DEMO = !SUPABASE_URL || !SUPABASE_ANON_KEY || new URLSearchParams(location.search).has('demo');
+const status = new Map();   // key robot|pc -> fila
+const resumen = new Map();  // key -> {ok_hoy, errores_hoy}
+let eventos = [];
+const rooms = new Map();    // key -> {el, canvas, ctx, anim}
+let sonido = false;
+
+const key = (r, pc) => `${r}|${pc}`;
+const meta = id => ROBOTS.find(r => r.id === id) || { id, nombre: id, color: '#e9e3f2' };
+
+/* minutos desde que empezó su horario hoy (null = fuera de horario) */
+function minEnHorario(id) {
+  const h = meta(id).horario; if (!h) return 9999;
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Guatemala', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+    .formatToParts(new Date()).map(x => [x.type, x.value]));
+  const dia = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday);
+  const min = (+p.hour % 24) * 60 + +p.minute, aMin = t => +t.slice(0, 2) * 60 + +t.slice(3);
+  return h.dias.includes(dia) && min >= aMin(h.desde) && min <= aMin(h.hasta) ? min - aMin(h.desde) : null;
+}
+function estadoEfectivo(s, id) {
+  const m = minEnHorario(id || s?.robot);
+  if (!s) return m === null ? 'durmiendo' : 'sindatos';
+  const limite = (s.intervalo_seg || 180) * 2 + GRACIA_SEG;
+  const edad = (Date.now() - new Date(s.last_seen).getTime()) / 1000;
+  if (edad <= limite) return s.estado;
+  if (m === null || m * 60 < limite) return 'durmiendo'; // fuera de horario o recién arrancando el día
+  return 'caido';
+}
+function hace(ts) {
+  if (!ts) return '—';
+  const s = Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 1000));
+  if (s < 60) return `hace ${s}s`;
+  if (s < 3600) return `hace ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `hace ${Math.floor(s / 3600)} h`;
+  return `hace ${Math.floor(s / 86400)} d`;
+}
+const hhmm = ts => new Date(ts).toLocaleTimeString('es-GT', { hour: '2-digit', minute: '2-digit', hour12: false });
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* ---------- Pixel-art renderer (160x112 lógicos) ---------- */
+const W = 160, H = 112;
+function px(ctx, x, y, w, h, c) { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+
+function drawRoom(r, t) {
+  const { ctx, k } = r;
+  const s = status.get(k);
+  const est = estadoEfectivo(s, k.split('|')[0]);
+  const sleep = est === 'durmiendo';
+  const col = meta(k.split('|')[0]).color;
+  const dead = est === 'caido' || est === 'sindatos';
+  const dim = dead || sleep;
+  ctx.setTransform(r.S, 0, 0, r.S, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+
+  // piso
+  for (let y = 30; y < H; y += 8) for (let x = 0; x < W; x += 8)
+    px(ctx, x, y, 8, 8, ((x + y) / 8) % 2 ? '#2a2333' : '#241e2c');
+  // muro
+  px(ctx, 0, 0, W, 30, '#3a3046');
+  for (let y = 0; y < 30; y += 6) for (let x = (y / 6) % 2 ? -6 : 0; x < W; x += 12) {
+    px(ctx, x, y, 11, 5, '#4a3d58'); px(ctx, x, y, 11, 1, '#56486a');
+  }
+  px(ctx, 0, 28, W, 2, '#1a1520');
+  // antorchas
+  [18, 142].forEach((tx, i) => {
+    px(ctx, tx - 1, 14, 3, 8, '#6b4a2b');
+    if (!dim) {
+      const f = Math.sin(t / 90 + i * 2) > 0 ? 1 : 0;
+      px(ctx, tx - 2, 9 - f, 5, 5, '#f97316'); px(ctx, tx - 1, 7 - f, 3, 4, '#fbbf24'); px(ctx, tx, 6 - f, 1, 2, '#fff7d6');
+      const g = ctx.createRadialGradient(tx, 12, 1, tx, 12, 26);
+      g.addColorStop(0, 'rgba(251,191,36,.18)'); g.addColorStop(1, 'rgba(251,191,36,0)');
+      ctx.fillStyle = g; ctx.fillRect(tx - 26, 0, 52, 40);
+    } else px(ctx, tx - 1, 11, 3, 3, '#3b3340');
+  });
+  // banderín con color del robot
+  px(ctx, 74, 4, 12, 16, col); px(ctx, 74, 20, 6, 3, col); px(ctx, 80, 20, 6, 2, col);
+  px(ctx, 77, 8, 6, 6, 'rgba(0,0,0,.25)');
+
+  // escritorio + monitor
+  px(ctx, 20, 58, 36, 4, '#7c5a3a'); px(ctx, 22, 62, 3, 14, '#5c4128'); px(ctx, 51, 62, 3, 14, '#5c4128');
+  px(ctx, 28, 44, 20, 14, '#1f2937');
+  const scr = est === 'trabajando' ? (Math.floor(t / 300) % 2 ? '#22c55e' : '#16a34a')
+            : est === 'error' ? (Math.floor(t / 250) % 2 ? '#ef4444' : '#7f1d1d')
+            : est === 'esperando' ? '#1e3a8a' : '#0b0f17';
+  px(ctx, 30, 46, 16, 10, scr);
+  if (est === 'trabajando') for (let i = 0; i < 3; i++) px(ctx, 32, 48 + i * 3, 4 + ((t / 120 + i * 5) % 10), 1, '#bbf7d0');
+  px(ctx, 36, 58, 4, 1, '#111');
+  // impresora
+  px(ctx, 112, 56, 26, 14, '#d1d5db'); px(ctx, 112, 56, 26, 3, '#9ca3af'); px(ctx, 114, 70, 22, 6, '#6b7280');
+  px(ctx, 132, 60, 2, 2, est === 'trabajando' ? '#22c55e' : est === 'error' ? '#ef4444' : '#374151');
+  if (est === 'trabajando') { const p = (t / 40) % 14; px(ctx, 117, 70 + p * 0.6, 16, 3 + p * 0.4, '#fff'); }
+
+  // robot
+  if (sleep) {
+    // durmiendo: robot apagado junto al escritorio + luna
+    drawBot(ctx, 38, 80, col, 'esperando', 0);
+    const z = (t / 1400) % 1; ctx.fillStyle = `rgba(196,181,253,${1 - z})`; ctx.font = '6px "Press Start 2P"';
+    ctx.fillText('z', 46, 62 - z * 8); ctx.fillText('Z', 50, 56 - z * 10);
+    px(ctx, 118, 8, 8, 8, '#e9d5ff'); px(ctx, 121, 8, 6, 6, '#3a3046');
+  } else if (!dead) {
+    let rx = 38, ry = 80, bob = 0, shake = 0;
+    if (est === 'trabajando') {
+      const cyc = ((t + r.phase) / 3200) % 1; const tri = cyc < .5 ? cyc * 2 : 2 - cyc * 2;
+      const e = tri < .15 ? 0 : tri > .85 ? 1 : (tri - .15) / .7;
+      rx = 38 + e * 82; bob = Math.floor(t / 140) % 2;
+    } else if (est === 'error') shake = Math.floor(t / 60) % 2 ? 1 : -1;
+    drawBot(ctx, rx + shake, ry - bob, col, est, t);
+    if (est === 'trabajando' && s?.llamada) bubble(ctx, rx, ry - 26, '#' + String(s.llamada).slice(-8), '#fff', '#111');
+    if (est === 'error') bubble(ctx, rx, ry - 26, '!', '#ef4444', '#fff');
+    if (est === 'esperando') {
+      const z = (t / 900) % 1;
+      ctx.fillStyle = `rgba(147,197,253,${1 - z})`; ctx.font = '6px "Press Start 2P"';
+      ctx.fillText('z', rx + 8, ry - 18 - z * 8); ctx.fillText('Z', rx + 12, ry - 24 - z * 10);
+    }
+  } else {
+    // lápida + fantasma
+    px(ctx, 32, 82, 14, 14, '#6b7280'); px(ctx, 34, 80, 10, 2, '#6b7280'); px(ctx, 30, 96, 18, 3, '#4b5563');
+    ctx.fillStyle = '#d1d5db'; ctx.font = '4px "Press Start 2P"'; ctx.fillText(est === 'caido' ? 'RIP' : '?', est === 'caido' ? 33 : 37, 90);
+    if (est === 'caido') {
+      const gy = 66 + Math.sin(t / 400) * 3;
+      ctx.globalAlpha = .7; px(ctx, 52, gy, 8, 8, '#e5e7eb'); px(ctx, 52, gy + 8, 2, 2, '#e5e7eb'); px(ctx, 55, gy + 8, 2, 2, '#e5e7eb'); px(ctx, 58, gy + 8, 2, 2, '#e5e7eb');
+      px(ctx, 54, gy + 3, 1, 2, '#111'); px(ctx, 57, gy + 3, 1, 2, '#111'); ctx.globalAlpha = 1;
+    }
+  }
+
+  // overlays
+  if (dead) { ctx.fillStyle = 'rgba(5,4,8,.55)'; ctx.fillRect(0, 0, W, H); }
+  if (sleep) { ctx.fillStyle = 'rgba(20,10,60,.45)'; ctx.fillRect(0, 0, W, H); }
+  if (est === 'error') { ctx.fillStyle = `rgba(239,68,68,${.08 + .08 * Math.sin(t / 150)})`; ctx.fillRect(0, 0, W, H); }
+  // viñeta
+  const v = ctx.createRadialGradient(W / 2, H / 2, 30, W / 2, H / 2, 100);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.45)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+
+function drawBot(ctx, x, y, col, est, t) {
+  x = Math.round(x); y = Math.round(y);
+  px(ctx, x - 5, y + 13, 12, 2, 'rgba(0,0,0,.35)');           // sombra
+  px(ctx, x - 4, y, 10, 9, col);                               // cuerpo
+  px(ctx, x - 4, y, 10, 1, 'rgba(255,255,255,.35)');
+  px(ctx, x - 1, y + 3, 4, 3, 'rgba(0,0,0,.25)');              // panel
+  px(ctx, x - 3, y - 8, 8, 7, '#e5e7eb'); px(ctx, x - 3, y - 2, 8, 1, '#9ca3af'); // cabeza
+  const blink = Math.floor(t / 2500) % 8 === 0 && (t % 2500) < 150;
+  const eye = est === 'error' ? '#ef4444' : '#111827';
+  if (est === 'esperando' || blink) { px(ctx, x - 2, y - 5, 2, 1, eye); px(ctx, x + 2, y - 5, 2, 1, eye); }
+  else { px(ctx, x - 2, y - 6, 2, 2, eye); px(ctx, x + 2, y - 6, 2, 2, eye); }
+  px(ctx, x, y - 11, 1, 3, '#9ca3af');                         // antena
+  const ant = est === 'trabajando' ? (Math.floor(t / 300) % 2 ? '#22c55e' : '#86efac') : est === 'error' ? '#ef4444' : '#60a5fa';
+  px(ctx, x - 1, y - 13, 3, 2, ant);
+  const step = est === 'trabajando' ? Math.floor(t / 140) % 2 : 0;  // piernas
+  px(ctx, x - 3, y + 9, 3, 4 - step, '#4b5563'); px(ctx, x + 2, y + 9, 3, 3 + step, '#4b5563');
+  const arm = est === 'trabajando' ? (Math.floor(t / 140) % 2 ? -1 : 1) : 0; // brazos
+  px(ctx, x - 6, y + 1 + arm, 2, 6, '#9ca3af'); px(ctx, x + 6, y + 1 - arm, 2, 6, '#9ca3af');
+}
+
+function bubble(ctx, x, y, txt, bg, fg) {
+  ctx.font = '5px "Press Start 2P"';
+  const w = Math.ceil(ctx.measureText(txt).width) + 6;
+  const bx = Math.max(2, Math.min(W - w - 2, Math.round(x - w / 2)));
+  px(ctx, bx, y - 8, w, 9, bg); px(ctx, bx, y - 8, w, 1, 'rgba(255,255,255,.4)');
+  px(ctx, Math.round(x), y + 1, 2, 2, bg);
+  ctx.fillStyle = fg; ctx.fillText(txt, bx + 3, y - 1);
+}
+
+/* ---------- DOM ---------- */
+function allKeys() {
+  const ks = new Set([...status.keys()]);
+  ROBOTS.forEach(r => { if (![...ks].some(k => k.startsWith(r.id + '|'))) ks.add(key(r.id, '—')); });
+  const order = id => { const i = ROBOTS.findIndex(r => r.id === id); return i < 0 ? 99 : i; };
+  return [...ks].sort((a, b) => order(a.split('|')[0]) - order(b.split('|')[0]) || a.localeCompare(b));
+}
+
+function ensureRooms() {
+  const keys = allKeys();
+  const grid = document.getElementById('grid');
+  [...rooms.keys()].forEach(k => { if (!keys.includes(k)) { rooms.get(k).el.remove(); rooms.delete(k); } });
+  keys.forEach(k => {
+    if (rooms.has(k)) { grid.appendChild(rooms.get(k).el); return; }
+    const el = document.createElement('article'); el.className = 'room';
+    el.innerHTML = `<canvas></canvas><div class="info"></div>`;
+    grid.appendChild(el);
+    const canvas = el.querySelector('canvas');
+    const r = { k, el, canvas, ctx: canvas.getContext('2d'), info: el.querySelector('.info'), S: 3, phase: Math.random() * 3200 };
+    rooms.set(k, r); sizeRoom(r);
+  });
+}
+function sizeRoom(r) {
+  const cssW = r.canvas.clientWidth || 300;
+  r.S = Math.max(2, Math.round(cssW * (window.devicePixelRatio || 1) / W));
+  r.canvas.width = W * r.S; r.canvas.height = H * r.S;
+}
+window.addEventListener('resize', () => rooms.forEach(sizeRoom));
+
+const prevEst = new Map();
+function renderInfo() {
+  const cnt = { trabajando: 0, esperando: 0, error: 0, caido: 0, sindatos: 0, durmiendo: 0 };
+  rooms.forEach(r => {
+    const [id, pc] = r.k.split('|'); const s = status.get(r.k); const e = estadoEfectivo(s, id); cnt[e]++;
+    const m = meta(id); const rs = resumen.get(r.k) || { ok_hoy: 0, errores_hoy: 0 };
+    r.el.className = 'room ' + e;
+    r.info.innerHTML = `
+      <div class="row"><span class="name" style="color:${m.color}">${esc(m.nombre)}</span>
+        <span class="badge" style="background:${ESTADOS[e].c}">${ESTADOS[e].txt}</span></div>
+      <div class="row meta"><span>PC: ${esc(pc)}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
+      <div class="det">${esc(e === 'caido' ? `Sin reportar desde ${s ? hhmm(s.last_seen) : '—'} (esperado cada ${Math.round((s?.intervalo_seg || 180) / 60)} min)` : e === 'sindatos' ? 'Aún no reporta al monitor' : e === 'durmiendo' ? `Fuera de horario (${meta(id).horario.desde}–${meta(id).horario.hasta})${s ? ' · última: ' + (s.detalle || '') : ''}` : (s?.detalle || '') + (s?.llamada ? ' · Llamada ' + s.llamada : ''))}</div>
+      ${s?.ultimo_error ? `<div class="err-txt" title="${esc(s.ultimo_error)}">Último error: ${esc(s.ultimo_error)}</div>` : ''}
+      <div class="stats"><span>Hoy OK <b style="color:var(--ok)">${rs.ok_hoy}</b></span><span>Errores <b style="color:var(--err)">${rs.errores_hoy}</b></span></div>`;
+    const p = prevEst.get(r.k);
+    if (p && p !== e && (e === 'error' || e === 'caido')) alerta(e);
+    prevEst.set(r.k, e);
+  });
+  document.getElementById('kpis').innerHTML = [
+    ['trabajando', cnt.trabajando], ['esperando', cnt.esperando], ['durmiendo', cnt.durmiendo], ['error', cnt.error], ['caido', cnt.caido + cnt.sindatos],
+  ].map(([e, n]) => `<div class="kpi"><span class="dot" style="background:${ESTADOS[e].c}"></span>${ESTADOS[e].txt} ${n}</div>`).join('');
+  document.title = (cnt.error + cnt.caido ? `(${cnt.error + cnt.caido}) ` : '') + 'Dungeon de Robots HPC';
+}
+
+function renderLog() {
+  const log = document.getElementById('log');
+  if (!eventos.length) { log.innerHTML = '<div class="empty">Sin eventos todavía</div>'; return; }
+  log.innerHTML = eventos.slice(0, 60).map(ev => `
+    <div class="ev"><time>${hhmm(ev.created_at)}</time>
+      <div><span class="t-${ev.tipo}">${ev.tipo.toUpperCase()}</span> <b>${esc(meta(ev.robot).nombre)}</b>
+      ${ev.llamada ? '· ' + esc(ev.llamada) : ''}${ev.mensaje ? `<div class="meta">${esc(ev.mensaje)}</div>` : ''}</div></div>`).join('');
+}
+
+/* ---------- Sonido ---------- */
+let actx;
+document.getElementById('snd').onclick = e => {
+  sonido = !sonido; e.target.textContent = 'SONIDO: ' + (sonido ? 'ON' : 'OFF');
+  if (sonido && !actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+};
+function alerta(tipo) {
+  if (!sonido || !actx) return;
+  const notas = tipo === 'error' ? [880, 660, 880] : [440, 330, 220];
+  notas.forEach((f, i) => {
+    const o = actx.createOscillator(), g = actx.createGain(); o.type = 'square'; o.frequency.value = f;
+    g.gain.value = .06; o.connect(g); g.connect(actx.destination);
+    o.start(actx.currentTime + i * .15); o.stop(actx.currentTime + i * .15 + .12);
+  });
+}
+
+/* ---------- Datos: Supabase ---------- */
+async function initSupabase() {
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  const cargar = async () => {
+    const [st, rs, ev] = await Promise.all([
+      sb.from('robot_status').select('*'),
+      sb.from('robot_resumen_hoy').select('*'),
+      sb.from('robot_eventos').select('*').order('created_at', { ascending: false }).limit(60),
+    ]);
+    if (st.error) { document.getElementById('sub').textContent = 'Error leyendo Supabase: ' + st.error.message; return; }
+    status.clear(); st.data.forEach(s => status.set(key(s.robot, s.pc), s));
+    resumen.clear(); (rs.data || []).forEach(x => resumen.set(key(x.robot, x.pc), x));
+    eventos = ev.data || [];
+    ensureRooms(); renderInfo(); renderLog();
+  };
+  await cargar();
+  let t; const recargarResumen = () => { clearTimeout(t); t = setTimeout(async () => {
+    const { data } = await sb.from('robot_resumen_hoy').select('*');
+    resumen.clear(); (data || []).forEach(x => resumen.set(key(x.robot, x.pc), x)); renderInfo();
+  }, 800); };
+  sb.channel('monitor')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'robot_status' }, p => {
+      const s = p.new && p.new.robot ? p.new : null; if (!s) return;
+      status.set(key(s.robot, s.pc), s); ensureRooms(); renderInfo();
+    })
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'robot_eventos' }, p => {
+      eventos.unshift(p.new); eventos = eventos.slice(0, 100); renderLog(); recargarResumen();
+    })
+    .subscribe();
+  setInterval(cargar, 5 * 60 * 1000); // respaldo por si se cae el realtime
+}
+
+/* ---------- Datos: DEMO ---------- */
+function initDemo() {
+  document.getElementById('demoTag').hidden = false;
+  document.getElementById('sub').textContent = 'HPC · Datos simulados — configura SUPABASE_URL y ANON KEY';
+  const now = Date.now(), iso = ms => new Date(ms).toISOString();
+  const base = [
+    { robot: 'citas',       pc: 'HPC-CS-ROBOT01', estado: 'trabajando', llamada: '2611040123', detalle: 'Creando llamada', intervalo_seg: 300 },
+    { robot: 'guias',       pc: 'HPC-CS-ROBOT01', estado: 'esperando',  detalle: 'Sin pendientes',  intervalo_seg: 180 },
+    { robot: 'mimo',        pc: 'HPC-MOSTRADOR',  estado: 'esperando',  detalle: 'Sin pendientes', intervalo_seg: 300, last: now - 26 * 60000 },
+    { robot: 'digitadores', pc: 'HPC-CS-ROBOT02', estado: 'error', llamada: '2611040099', detalle: 'Error', intervalo_seg: 180,
+      ultimo_error: 'Timeout 30000ms esperando #btnAceptar' },
+  ];
+  base.forEach(b => status.set(key(b.robot, b.pc), { ...b, version: '1.0', last_seen: iso(b.last || now) }));
+  ROBOTS.forEach((r, i) => resumen.set(key(r.id, base[i].pc), { ok_hoy: 10 + i * 7, errores_hoy: i === 3 ? 3 : i % 2 }));
+  for (let i = 0; i < 12; i++) eventos.push({ robot: ROBOTS[i % 4].id, tipo: i % 5 === 4 ? 'info' : 'ok', llamada: '26110400' + (50 + i), mensaje: i % 5 === 4 ? 'Ciclo completo' : null, created_at: iso(now - i * 140000) });
+  ensureRooms(); renderInfo(); renderLog();
+
+  setInterval(() => {
+    ['citas', 'guias', 'digitadores'].forEach(id => {
+      const k = [...status.keys()].find(x => x.startsWith(id + '|')); const s = status.get(k);
+      const roll = Math.random();
+      if (roll < .12) s.estado = 'esperando', s.llamada = null, s.detalle = 'Sin pendientes';
+      else if (roll < .17) { s.estado = 'error'; s.ultimo_error = 'Selector no encontrado: #txtTelefono'; eventos.unshift({ robot: id, tipo: 'error', llamada: s.llamada, mensaje: s.ultimo_error, created_at: iso(Date.now()) }); resumen.get(k).errores_hoy++; }
+      else if (roll < .6) {
+        if (s.estado === 'trabajando' && s.llamada) { eventos.unshift({ robot: id, tipo: 'ok', llamada: s.llamada, created_at: iso(Date.now()) }); resumen.get(k).ok_hoy++; }
+        s.estado = 'trabajando'; s.llamada = '26110' + Math.floor(40000 + Math.random() * 9999); s.detalle = 'Procesando';
+      }
+      s.last_seen = iso(Date.now());
+    });
+    eventos = eventos.slice(0, 100); renderInfo(); renderLog();
+  }, 4000);
+}
+
+/* ---------- Loop ---------- */
+function loop(t) { rooms.forEach(r => drawRoom(r, t)); requestAnimationFrame(loop); }
+setInterval(renderInfo, 15000); // refresca "hace X" y detecta caídos
+DEMO ? initDemo() : initSupabase().catch(e => { document.getElementById('sub').textContent = 'Error: ' + e.message; });
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

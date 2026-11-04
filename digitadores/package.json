@@ -1,0 +1,22 @@
+{
+  "name": "hpc-digitadores",
+  "private": true,
+  "type": "module",
+  "description": "Robot de digitadores: digita en CSHP las llamadas en estado Garantía de la Bandeja (ConsumosCS)",
+  "scripts": {
+    "listar": "node --env-file=.env digitar-garantia.mjs --qa --solo-listar",
+    "listar:prod": "node --env-file=.env digitar-garantia.mjs --prod --solo-listar",
+    "qa": "node --env-file=.env digitar-garantia.mjs --qa --lento",
+    "prod": "node --env-file=.env digitar-garantia.mjs --prod",
+    "auto": "node --env-file=.env digitar-garantia.mjs",
+    "grabar": "playwright codegen https://tallerqa.hpc.com.gt/CSHP",
+    "grabar:prod": "playwright codegen https://taller.hpc.com.gt/CSHP",
+    "prueba": "node --env-file=.env digitar-garantia.mjs --qa --prueba --lento",
+    "prod:visible": "node --env-file=.env digitar-garantia.mjs --prod --visible",
+    "vivo": "node ver-vivo.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "playwright": "1.64.1"
+  }
+}
