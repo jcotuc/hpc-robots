@@ -816,33 +816,39 @@ function loop(t) {
   requestAnimationFrame(loop);
 }
 
-/* Mouse sobre un cuarto → lo último que hizo */
+/* Clic en un cuarto → detalle flotante (se cierra solo a los 8 s, al salir del cuarto o con otro clic) + resalta su tarjeta */
 const tip = document.getElementById('tip');
-cv.addEventListener('mousemove', e => {
+let tipCuarto = null, tipTimer = null;
+const cuartoEn = e => {
   const b = cv.getBoundingClientRect(), x = (e.clientX - b.left) / b.width * MW, y = (e.clientY - b.top) / b.height * MH;
-  const q = [...cuartos.values()].find(q => x >= q.x && x <= q.x + RW && y >= q.y && y <= q.y + RH);
-  if (!q) { tip.hidden = true; return; }
+  return [...cuartos.values()].find(q => x >= q.x && x <= q.x + RW && y >= q.y && y <= q.y + RH);
+};
+function cerrarTip() { tip.hidden = true; tipCuarto = null; clearTimeout(tipTimer); }
+function abrirTip(q, e) {
   const [id, pc] = q.k.split('|'), m = meta(id), s = status.get(q.k), e2 = estadoEfectivo(s, id);
   const evs = eventos.filter(ev => ev.robot === id && (pc === '—' || ev.pc === pc)).slice(0, 6);
   const hs = m.global ? hallazgos : hallazgosDe(q.k);
   const enCola = id === 'guias' ? [...flujo.entries()].filter(([, f]) => f.a === 'guias' && !f.impresa).map(([L]) => L) : [];
+  const limpio = ev => { let t = String(ev.mensaje || ''); if (ev.llamada) t = t.replace(new RegExp('^\\s*(OK\\s+)?' + ev.llamada.replace(/[-]/g, '\\-') + '\\s*', 'i'), ''); return t.replace(/\s+/g, ' ').trim().slice(0, 42); };
   tip.innerHTML = `<b class="n" style="color:${m.color}">${esc(m.nombre)}</b><span class="meta">${ESTADOS[e2].txt} · ${hace(s?.last_seen)}</span>`
     + (enCola.length ? `<div class="l"><b>Por imprimir:</b> ${esc(enCola.slice(0, 4).join(', '))}${enCola.length > 4 ? '…' : ''}</div>` : '')
     + hs.slice(0, 3).map(h => `<div class="l"><span class="dot" style="background:${HALLAZGO_COLOR(h)}"></span>${esc(h.titulo)}</div>`).join('')
-    + (evs.length ? evs.map(ev => `<div class="l"><span class="meta">${hhmm(ev.created_at)}</span><span class="t-${ev.tipo}" style="color:${ev.tipo === 'ok' ? 'var(--ok)' : ev.tipo === 'error' ? 'var(--err)' : 'var(--wait)'}">${ev.tipo.toUpperCase()}</span>${esc(ev.llamada || '')} ${esc((ev.mensaje || '').slice(0, 40))}</div>`).join('') : '<span class="meta">Sin movimientos recientes</span>');
-  tip.hidden = false;
+    + (evs.length ? evs.map(ev => `<div class="l"><span class="meta">${hhmm(ev.created_at)}</span><span style="color:${ev.tipo === 'ok' ? 'var(--ok)' : ev.tipo === 'error' ? 'var(--err)' : 'var(--wait)'}">${ev.tipo.toUpperCase()}</span>${esc(ev.llamada || '')} <span class="meta">${esc(limpio(ev))}</span></div>`).join('') : '<span class="meta">Sin movimientos recientes</span>');
+  tip.hidden = false; tipCuarto = q.k;
   const w = tip.offsetWidth, h = tip.offsetHeight;
-  tip.style.left = Math.min(innerWidth - w - 8, e.clientX + 14) + 'px'; tip.style.top = Math.min(innerHeight - h - 8, e.clientY + 14) + 'px';
-});
-cv.addEventListener('mouseleave', () => { tip.hidden = true; });
-
-/* Clic en un cuarto → su tarjeta */
+  tip.style.left = Math.max(8, Math.min(innerWidth - w - 8, e.clientX + 14)) + 'px'; tip.style.top = Math.max(8, Math.min(innerHeight - h - 8, e.clientY + 14)) + 'px';
+  clearTimeout(tipTimer); tipTimer = setTimeout(cerrarTip, 8000);
+}
 cv.addEventListener('click', e => {
-  const b = cv.getBoundingClientRect(), x = (e.clientX - b.left) / b.width * MW, y = (e.clientY - b.top) / b.height * MH;
-  const q = [...cuartos.values()].find(q => x >= q.x && x <= q.x + RW && y >= q.y && y <= q.y + RH);
-  const el = q && document.querySelector(`.card[data-k="${CSS.escape(q.k)}"]`);
+  const q = cuartoEn(e);
+  if (!q || q.k === tipCuarto) { cerrarTip(); return; }
+  abrirTip(q, e);
+  const el = document.querySelector(`.card[data-k="${CSS.escape(q.k)}"]`);
   if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); el.classList.add('foco'); setTimeout(() => el.classList.remove('foco'), 1500); }
 });
+cv.addEventListener('mousemove', e => { if (tipCuarto && cuartoEn(e)?.k !== tipCuarto) cerrarTip(); });
+cv.addEventListener('mouseleave', cerrarTip);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrarTip(); });
 
 /* ---------- Tarjetas ---------- */
 const prevEst = new Map();
