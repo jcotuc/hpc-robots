@@ -1,0 +1,11 @@
+{
+  "name": "hpc-jefe",
+  "private": true,
+  "type": "module",
+  "description": "El Jefe del dungeon: revisa el trabajo de los robots (solo lectura) y avisa por correo",
+  "scripts": {
+    "revisar": "node --env-file=.env revisar.mjs --qa",
+    "prod": "node --env-file=.env revisar.mjs --prod",
+    "auto": "node --env-file=.env revisar.mjs"
+  }
+}

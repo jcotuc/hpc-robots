@@ -124,6 +124,8 @@ const CENTROS = [
 const COMUN = 'Común';   // robots que atienden a todos los centros (hoy ninguno)
 const LS = [1, 2, 3, 4, 5, 6]; // lunes a sábado
 const ROBOTS = [
+  /* El Jefe: revisa a los demás (jefe/revisar.mjs). global = su oficina sale en todos los niveles */
+  { id: 'jefe',        nombre: 'Jefe',        sala: 'jefatura',   global: true,     color: '#f59e0b', horario: { dias: LS, desde: '06:00', hasta: '21:00' } },
   { id: 'citas',       nombre: 'Citas',       sala: 'recepcion',  centro: 'Zona 4', color: '#f5c542', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
   /* Guías puede correr en varios centros: cada PC pone ROBOT_CENTRO en su .env (ver monitor/03_centros.sql); sin eso = Nodus */
   { id: 'guias',       nombre: 'Guías',       sala: 'logistica',  centro: 'Nodus',  color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
@@ -157,6 +159,8 @@ const resumen = new Map();   // robot|pc -> {ok_hoy, errores_hoy}
 const areaStats = new Map(); // robot|pc|area -> {ok, err, reint, ultimo}
 const ultimoOk = new Map();  // robot|pc -> fecha del último OK (para animar "recién terminado")
 let eventos = [];
+let hallazgos = [];          // jefe_hallazgos abiertos
+let jefeVa = null, jefeDesde = 0, jefeAntes = null;   // cuarto al que fue el jefe (y de dónde venía)
 
 const key = (r, pc) => `${r}|${pc}`;
 const meta = id => ROBOTS.find(r => r.id === id) || { id, nombre: id, color: '#e9e3f2' };
@@ -232,10 +236,11 @@ function todasLasKeys() {
   const orden = id => ROBOTS.findIndex(r => r.id === id);
   return [...ks].sort((a, b) => orden(a.split('|')[0]) - orden(b.split('|')[0]) || a.localeCompare(b));
 }
+const esGlobal = k => !!meta(k.split('|')[0]).global;
 function allKeys() {
   const ks = todasLasKeys();
-  if (nivel === 'todos' || !ks.some(k => centroDe(k) === nivel)) return ks;
-  return ks.filter(k => centroDe(k) === nivel);
+  if (nivel === 'todos' || !ks.some(k => !esGlobal(k) && centroDe(k) === nivel)) return ks;
+  return ks.filter(k => esGlobal(k) || centroDe(k) === nivel);
 }
 function elegirNivel(n) {
   nivel = n; try { localStorage.setItem('dungeon-nivel', n); } catch {}
@@ -243,7 +248,7 @@ function elegirNivel(n) {
 }
 function renderNiveles() {
   const ks = todasLasKeys(), por = {};
-  ks.forEach(k => (por[centroDe(k)] ||= []).push(estadoEfectivo(status.get(k), k.split('|')[0])));
+  ks.filter(k => !esGlobal(k)).forEach(k => (por[centroDe(k)] ||= []).push(estadoEfectivo(status.get(k), k.split('|')[0])));
   const luces = l => `<span class="luces">${(l || []).map(e => `<i style="background:${ESTADOS[e].c}"></i>`).join('')}</span>`;
   const chip = (id, nombre, l) => l?.length
     ? `<button class="nivel ${nivel === id ? 'activo' : ''}" data-n="${esc(id)}">${esc(nombre)} ${luces(l)}</button>`
@@ -563,6 +568,65 @@ function salaCorreo(q, s, est, t, col, areas) {
   return r;
 }
 
+/* ---------- El Jefe ---------- */
+const HALLAZGO_COLOR = h => h.severidad === 'alta' ? '#ef4444' : '#f59e0b';
+function hallazgosDe(k) { const [id, pc] = k.split('|'); return hallazgos.filter(h => h.robot === id && (!h.pc || h.pc === pc || pc === '—')); }
+/* A qué cuarto va: el hallazgo alto más viejo de un cuarto visible; si no hay, se queda en su oficina */
+function destinoJefe() {
+  const orden = [...hallazgos].sort((a, b) => (a.severidad === 'alta' ? 0 : 1) - (b.severidad === 'alta' ? 0 : 1) || String(a.abierto_en).localeCompare(String(b.abierto_en)));
+  for (const h of orden) { const k = [...cuartos.keys()].find(k => !esGlobal(k) && hallazgosDe(k).includes(h)); if (k) return k; }
+  return null;
+}
+function jefe(x, y, t, { pose = 'pie', est = 'esperando', tabla = false } = {}) {
+  robot(x, y, '#f59e0b', { pose, t, est });
+  const by = y - (pose === 'camina' ? Math.floor(t / 130) % 2 : 0);
+  px(x - 5, by - 15, 12, 2, '#111827'); px(x - 2, by - 21, 7, 6, '#111827'); px(x - 2, by - 17, 7, 1, '#b91c1c');   // sombrero
+  px(x - 2, by + 1, 7, 1, '#7c2d12'); px(x, by + 2, 2, 3, '#b91c1c');                                           // corbata
+  if (tabla) { px(x + 6, by + 1, 6, 8, '#a16207'); px(x + 7, by + 2, 4, 6, '#f9fafb'); px(x + 8, by + 3, 2, 1, '#6b7280'); px(x + 8, by + 5, 2, 1, '#6b7280'); }
+}
+function humo(x, y, t0) {
+  const p = (performance.now() - t0) / 700; if (p > 1) return;
+  ctx.globalAlpha = 1 - p;
+  for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2, r = 4 + p * 12; px(x + Math.cos(a) * r - 2, y + Math.sin(a) * r - 2, 4, 4, '#e5e7eb'); }
+  ctx.globalAlpha = 1;
+}
+function salaJefatura(q, s, est, t) {
+  const fuera = !!jefeVa;
+  // tablero de alertas en el muro
+  px(52, 28, 80, 30, '#1f2937'); px(52, 28, 80, 2, '#f59e0b'); px(53, 30, 78, 27, '#111827');
+  texto(`ALERTAS ${hallazgos.length}`, 92, 37, 4, hallazgos.length ? '#fca5a5' : '#86efac', true);
+  if (!hallazgos.length) texto('TODO EN ORDEN', 92, 48, 4, '#86efac', true);
+  hallazgos.slice(0, 4).forEach((h, i) => { px(57, 41 + i * 4, 3, 3, HALLAZGO_COLOR(h)); px(62, 42 + i * 4, 30 + (h.titulo.length * 7) % 36, 1, '#9ca3af'); });
+  // escritorio grande, silla, planta y trofeo
+  px(58, 72, 68, 5, '#7c5a3a'); px(58, 72, 68, 1, '#a07a50'); px(58, 77, 68, 18, '#5c4128'); px(62, 80, 60, 1, '#4a3420');
+  px(70, 66, 12, 6, '#f9fafb'); px(100, 62, 16, 10, '#1f2937'); px(102, 64, 12, 6, hallazgos.length ? '#7f1d1d' : '#14532d');
+  px(20, 84, 8, 10, '#78350f'); px(17, 74, 14, 10, '#16a34a'); px(20, 70, 8, 6, '#22c55e');                  // planta
+  px(150, 60, 22, 3, '#5c4128'); px(156, 52, 8, 6, '#facc15'); px(158, 58, 4, 2, '#ca8a04');                  // trofeo
+  px(86, 50, 14, 18, '#3f3f46'); px(85, 66, 16, 4, '#27272a');                                                // silla
+  if (['caido', 'sindatos'].includes(est)) return null;
+  if (!fuera) {
+    const pose = est === 'durmiendo' ? 'dormido' : 'sentado';
+    jefe(93, 58 + (est === 'trabajando' ? Math.floor(t / 400) % 2 : 0), t, { pose, est });
+    if (est === 'durmiendo') zzz(100, 46, t, '196,181,253');
+    else if (est === 'trabajando') globo(93, 40, 'REVISANDO');
+    if (jefeAntes && jefeAntes !== q.k) humo(93, 64, jefeDesde);
+  } else {
+    const k = jefeVa, nombre = meta(k.split('|')[0]).nombre.toUpperCase();
+    px(118, 66, 22, 12, '#fef3c7'); px(118, 66, 22, 1, '#f59e0b');
+    texto('FUE A', 129, 71, 3, '#78350f', true); texto(nombre.slice(0, 8), 129, 76, 3, '#78350f', true);
+    humo(93, 64, jefeDesde);
+  }
+  return null;
+}
+function jefeDeVisita(q, t) {
+  const hs = hallazgosDe(q.k), x = RW - 26, y = 80;
+  humo(x, y - 6, jefeDesde);
+  if (performance.now() - jefeDesde < 250) return;
+  jefe(x + Math.sin(t / 500) * 3, y, t, { pose: Math.floor(t / 1800) % 2 ? 'camina' : 'pie', tabla: true, est: 'trabajando' });
+  const txt = Math.floor(t / 1500) % 2 ? (hs[0]?.severidad === 'alta' ? '!!' : '?') : 'JEFE';
+  globo(x + 1, y - 26, txt, hs[0] ? HALLAZGO_COLOR(hs[0]) : '#f59e0b', '#111');
+}
+
 function salaGenerica(q, s, est, t) {
   escritorio(70, 60, 40); compu(80, 44, est, t, true);
   return { x: 90, y: 78, accion: est === 'trabajando' ? 'teclear' : 'pie', f: 0 };
@@ -574,12 +638,13 @@ function dibujarCuarto(q, t) {
   const est = estadoEfectivo(s, id), dim = !['trabajando', 'esperando', 'error'].includes(est);
   ctx.save(); ctx.translate(q.x, q.y); ctx.beginPath(); ctx.rect(0, 0, RW, RH); ctx.clip();
   const cen = centroDe(q.k);
-  cuartoBase(q, (nivel === 'todos' && cen !== COMUN ? `${m.nombre} · ${cen}` : m.nombre).toUpperCase(), m.color, dim, t);
+  cuartoBase(q, (nivel === 'todos' && cen !== COMUN && !m.global ? `${m.nombre} · ${cen}` : m.nombre).toUpperCase(), m.color, dim, t);
   let r;
   if (m.sala === 'logistica') r = salaLogistica(q, s, est, t, m.color);
   else if (m.sala === 'digitacion') r = salaDigitacion(q, s, est, t, m.color, m.areas || [{ id: 'gen', rotulo: m.nombre.toUpperCase(), color: m.color, tipos: /./ }]);
   else if (m.sala === 'recepcion') r = salaRecepcion(q, s, est, t, m.color);
   else if (m.sala === 'correo' && m.areas) r = salaCorreo(q, s, est, t, m.color, m.areas);
+  else if (m.sala === 'jefatura') r = salaJefatura(q, s, est, t);
   else r = salaGenerica(q, s, est, t);
 
   if (r) {   // robot de pie (las salas sentadas lo dibujan ellas)
@@ -603,6 +668,7 @@ function dibujarCuarto(q, t) {
       px(gx + 2, gy + 3, 1, 2, '#111'); px(gx + 5, gy + 3, 1, 2, '#111'); ctx.globalAlpha = 1;
     }
   }
+  if (jefeVa === q.k) jefeDeVisita(q, t);
   // capas de estado
   if (est === 'caido' || est === 'sindatos') { ctx.fillStyle = 'rgba(5,4,8,.55)'; ctx.fillRect(0, 0, RW, RH); }
   if (est === 'durmiendo') { ctx.fillStyle = 'rgba(20,10,60,.45)'; ctx.fillRect(0, 0, RW, RH); px(RW - 30, 30, 8, 8, '#e9d5ff'); px(RW - 27, 30, 6, 6, 'rgba(20,10,60,.9)'); }
@@ -618,6 +684,8 @@ function loop(t) {
   ctx.setTransform(S, 0, 0, S, 0, 0); ctx.imageSmoothingEnabled = false;
   if (fondo) ctx.drawImage(fondo, 0, 0, MW, MH);
   dibujarAntorchas(t);
+  const d = destinoJefe();
+  if (d !== jefeVa) { jefeAntes = jefeVa ?? [...cuartos.keys()].find(esGlobal); jefeVa = d; jefeDesde = performance.now(); }
   cuartos.forEach(q => dibujarCuarto(q, t));
   requestAnimationFrame(loop);
 }
@@ -646,7 +714,7 @@ function renderCards() {
       : (s?.detalle || '') + (s?.llamada ? (m.sala === 'correo' ? ' · Ref. ' : ' · Llamada ') + s.llamada : '');
     return `<article class="card ${e}" data-k="${esc(k)}">
       <div class="row"><span class="name" style="color:${m.color}">${esc(m.nombre)}</span><span class="badge" style="background:${ESTADOS[e].c}">${ESTADOS[e].txt}</span></div>
-      <div class="row meta"><span>${esc(centroDe(k))} · PC: ${esc(pc)}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
+      <div class="row meta"><span>${esc(m.global ? 'Todos los centros' : centroDe(k))} · PC: ${esc(pc)}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
       <div class="det" title="${esc(det)}">${esc(det)}</div>
       ${s?.ultimo_error ? `<div class="err-txt" title="${esc(s.ultimo_error)}">Último error: ${esc(s.ultimo_error)}</div>` : ''}
       <div class="stats"><span>Hoy OK <b style="color:var(--ok)">${rs.ok_hoy}</b></span><span>Errores <b style="color:var(--err)">${rs.errores_hoy}</b></span></div>
@@ -654,12 +722,16 @@ function renderCards() {
         <div class="area"><span class="dot" style="background:${a.color}"></span><b>${esc(a.nombre)}</b>
           <span>OK <b style="color:var(--ok)">${x.ok || 0}</b></span>${x.err ? `<span>Err <b style="color:var(--err)">${x.err}</b></span>` : ''}${x.reint ? `<span>Reint. <b style="color:var(--gold)">${x.reint}</b></span>` : ''}
           <span class="meta">${x.ultimo ? 'último ' + hhmm(x.ultimo) : 'sin movimiento hoy'}</span></div>`; }).join('')}</div>` : ''}
+      ${(m.global ? hallazgos : hallazgosDe(k)).length ? `<div class="areas">${(m.global ? hallazgos : hallazgosDe(k)).slice(0, 6).map(h => `
+        <div class="area" title="${esc(h.detalle || '')}"><span class="dot" style="background:${HALLAZGO_COLOR(h)}"></span>${m.global ? `<b>${esc(meta(h.robot).nombre)}</b>` : '<b style="color:var(--gold)">Jefe</b>'}
+          <span>${esc(h.titulo)}</span><span class="meta">${hace(h.abierto_en)}</span></div>`).join('')}</div>` : (m.global && e !== 'sindatos' ? '<div class="meta">Sin hallazgos: todo en orden</div>' : '')}
     </article>`;
   }).join('');
   document.getElementById('kpis').innerHTML = [
     ['trabajando', cnt.trabajando], ['esperando', cnt.esperando], ['durmiendo', cnt.durmiendo], ['error', cnt.error], ['caido', cnt.caido], ['sindatos', cnt.sindatos],
   ].filter(([e, n]) => n || ['trabajando', 'error', 'caido'].includes(e))
-   .map(([e, n]) => `<div class="kpi"><span class="dot" style="background:${ESTADOS[e].c}"></span>${ESTADOS[e].txt} ${n}</div>`).join('');
+   .map(([e, n]) => `<div class="kpi"><span class="dot" style="background:${ESTADOS[e].c}"></span>${ESTADOS[e].txt} ${n}</div>`).join('')
+   + (hallazgos.length ? `<div class="kpi" style="border-color:#f59e0b"><span class="dot" style="background:#f59e0b"></span>JEFE: ${hallazgos.length} ALERTA${hallazgos.length > 1 ? 'S' : ''}</div>` : '');
   document.title = (cnt.error + cnt.caido ? `(${cnt.error + cnt.caido}) ` : '') + 'Dungeon de Robots HPC';
 }
 
@@ -732,7 +804,12 @@ async function initSupabase() {
     resumen.clear(); (rs.data || []).forEach(x => resumen.set(key(x.robot, x.pc), x));
     eventos = ev.data || [];
     areaStats.clear(); ultimoOk.clear(); (hoy.data || []).filter(e => e.tipo === 'ok' || conAreas.includes(e.robot)).forEach(contarEvento);
+    await cargarHallazgos();
     ultimaFirma = ''; quizasLayout(); renderCards(); renderLog();
+  };
+  const cargarHallazgos = async () => {
+    const { data, error } = await sb.from('jefe_hallazgos').select('*').is('cerrado_en', null).order('abierto_en');
+    if (!error) hallazgos = data || [];
   };
   await cargar();
   let t; const recargarResumen = () => { clearTimeout(t); t = setTimeout(async () => {
@@ -749,6 +826,10 @@ async function initSupabase() {
       if (p.new.tipo === 'ok') sonar('ok'); if (p.new.tipo === 'error') sonar('error');
       renderLog(); recargarResumen();
     })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'jefe_hallazgos' }, async p => {
+      if (p.eventType === 'INSERT' && p.new?.severidad === 'alta') sonar('error');
+      await cargarHallazgos(); renderCards();
+    })
     .subscribe();
   setInterval(cargar, 5 * 60 * 1000); // respaldo por si se cae el realtime
 }
@@ -764,18 +845,25 @@ function initDemo() {
     { robot: 'digitadores', pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: 'LLS21-556758', detalle: 'Procesando', intervalo_seg: 180 },
     { robot: 'correos',     pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: '89DC279B', detalle: 'Enviando autoconsumo_solicitud', intervalo_seg: 120 },
   ];
+  base.unshift({ robot: 'jefe', pc: 'HPCLPJCOTUC', estado: 'esperando', detalle: 'Todo en orden', intervalo_seg: 300 });
   base.forEach(b => status.set(key(b.robot, b.pc), { ...b, version: '1.0', last_seen: iso(now) }));
-  base.forEach((b, i) => resumen.set(key(b.robot, b.pc), { ok_hoy: 3 + i * 2, errores_hoy: i === 1 ? 1 : 0 }));
+  base.forEach((b, i) => resumen.set(key(b.robot, b.pc), { ok_hoy: 3 + i * 2, errores_hoy: i === 2 ? 1 : 0 }));
   const TIPOS = ['autoconsumo_solicitud', 'autoconsumo_resuelto', 'garantia_taller', 'garantia_pendiente', 'garantia_resuelto'];
   for (let i = 0; i < 10; i++) {
     const ev = i % 2
       ? { robot: 'correos', pc: 'HPCLPJCOTUC', tipo: 'ok', llamada: 'AC' + (100 + i), mensaje: `${TIPOS[i % 5]} → usuario@hpc.com.gt`, created_at: iso(now - i * 300000) }
-      : { robot: ['citas', 'guias', 'digitadores'][i % 3], pc: base[i % 3].pc, tipo: 'ok', llamada: 'LLS21-5570' + (10 + i), mensaje: null, created_at: iso(now - i * 300000) };
+      : { robot: ['citas', 'guias', 'digitadores'][i % 3], pc: base[1 + i % 3].pc, tipo: 'ok', llamada: 'LLS21-5570' + (10 + i), mensaje: null, created_at: iso(now - i * 300000) };
     eventos.push(ev); contarEvento(ev);
   }
   ultimaFirma = ''; quizasLayout(); renderCards(); renderLog();
+  let vuelta = 0;
   setInterval(() => {
-    base.forEach(b => {
+    vuelta++;
+    hallazgos = vuelta % 3 === 1 ? [{ clave: 'citas:atoradas', robot: 'citas', severidad: 'alta', titulo: '2 cita(s) lista(s) sin llamada hace más de 30 min', detalle: 'El robot de Citas no las está tomando: 412-1, 413-1', abierto_en: iso(Date.now() - 600000) },
+                                        { clave: 'correos:atrasados', robot: 'correos', severidad: 'media', titulo: '1 correo(s) en cola hace más de 15 min', detalle: 'autoconsumo_solicitud AC120', abierto_en: iso(Date.now() - 300000) }]
+              : vuelta % 3 === 2 ? [{ clave: 'correos:atrasados', robot: 'correos', severidad: 'media', titulo: '1 correo(s) en cola hace más de 15 min', detalle: 'autoconsumo_solicitud AC120', abierto_en: iso(Date.now() - 300000) }] : [];
+    Object.assign(status.get('jefe|HPCLPJCOTUC'), { estado: 'esperando', detalle: hallazgos.length ? `${hallazgos.length} hallazgo(s) abiertos` : 'Todo en orden', last_seen: iso(Date.now()) });
+    base.filter(b => b.robot !== 'jefe').forEach(b => {
       const k = key(b.robot, b.pc), s = status.get(k), roll = Math.random();
       if (s.estado === 'trabajando' && roll < .5) {
         const ev = { robot: b.robot, pc: b.pc, tipo: 'ok', llamada: s.llamada, mensaje: b.robot === 'correos' ? s.detalle.replace('Enviando ', '') + ' → usuario@hpc.com.gt' : null, created_at: iso(Date.now()) };
