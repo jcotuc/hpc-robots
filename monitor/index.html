@@ -283,10 +283,11 @@ function robot(x, y, col, { pose = 'pie', carga = null, t = 0, est = 'esperando'
     px(x - 6, by + 1 + b, 2, 6, '#9ca3af'); px(x + 6, by + 1 - b, 2, 6, '#9ca3af');
   }
 }
+const corto = v => { const t = String(v); return t.length > 13 ? '…' + t.slice(-12) : t; };
 function globo(x, y, txt, bg = '#fff', fg = '#111') {
   ctx.font = '5px "Press Start 2P", monospace';
   const w = Math.ceil(ctx.measureText(txt).width) + 6;
-  const bx = Math.round(x - w / 2);
+  const bx = Math.max(5, Math.min(RW - 5 - w, Math.round(x - w / 2)));
   px(bx, y - 8, w, 9, bg); px(bx, y - 8, w, 1, 'rgba(255,255,255,.4)'); px(Math.round(x), y + 1, 2, 2, bg);
   ctx.fillStyle = fg; ctx.fillText(txt, bx + 3, y - 1);
 }
@@ -424,9 +425,9 @@ function salaDigitacion(q, s, est, t, col, areas) {
     const pila = Math.min(8, st.ok || 0);
     for (let k = 0; k < pila; k++) px(cx - 20, 74 - k * 1.5, 7, 2, k % 2 ? '#f9fafb' : '#e5e7eb');
     texto(String(st.ok || 0), cx + 3, 92, 5, dim ? '#6b6475' : '#fef3c7', true);
-    if (pose === 'teclea' && Math.floor(t / 700) % 2) globo(cx - 2, 46, '...');
+    if (pose === 'teclea') globo(cx - 2, 46, s?.llamada ? corto(s.llamada) : '...');
     if (recien && esta && est !== 'error') { px(cx + 22, 44, 7, 7, '#22c55e'); px(cx + 24, 48, 1, 1, '#fff'); px(cx + 25, 49, 1, 1, '#fff'); px(cx + 26, 47, 1, 2, '#fff'); px(cx + 27, 45, 1, 2, '#fff'); }
-    if (est === 'error' && esta) globo(cx - 2, 46, '!', '#ef4444', '#fff');
+    if (est === 'error' && esta) globo(cx - 2, 46, s?.llamada ? '! ' + corto(s.llamada) : '!', '#ef4444', '#fff');
     if (pose === 'dormido' && !dim) zzz(cx + 4, 52, t);
   });
   return null; // el robot ya se dibujó
@@ -515,11 +516,11 @@ function dibujarCuarto(q, t) {
     if (est === 'trabajando') {
       const pose = r.accion === 'camina' ? 'camina' : r.accion === 'teclear' ? 'teclea' : 'pie';
       robot(r.x, r.y, m.color, { pose, carga: r.carga, t, est, mira: r.mira });
-      if (s?.llamada && r.accion !== 'camina') globo(r.x + 1, r.y - 18, String(s.llamada).slice(-9));
+      if (s?.llamada) globo(r.x + 1, r.y - 18 - (r.accion === 'camina' ? Math.floor(t / 130) % 2 : 0), corto(s.llamada));
     } else if (est === 'esperando') { robot(r.x, r.y, m.color, { t, est }); zzz(r.x + 7, r.y - 14, t); }
     else if (est === 'error') {
       const sh = Math.floor(t / 60) % 2 ? 1 : -1;
-      robot(r.x + sh, r.y, m.color, { t, est }); globo(r.x + 1, r.y - 18, '!', '#ef4444', '#fff');
+      robot(r.x + sh, r.y, m.color, { t, est }); globo(r.x + 1, r.y - 18, s?.llamada ? '! ' + corto(s.llamada) : '!', '#ef4444', '#fff');
     } else if (est === 'durmiendo') { robot(r.x, r.y, m.color, { pose: 'dormido', t, est }); zzz(r.x + 7, r.y - 14, t, '196,181,253'); }
   }
   if (est === 'caido' || est === 'sindatos') {
