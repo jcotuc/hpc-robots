@@ -4,7 +4,7 @@
 
 -- 1) Estado actual: 1 fila por robot + PC
 create table if not exists public.robot_status (
-  robot          text        not null,           -- 'citas','guias','garantias','mimo','digitadores'
+  robot          text        not null,           -- 'citas','guias','garantias','mimo','digitadores','correos'
   pc             text        not null,           -- hostname de la PC
   estado         text        not null check (estado in ('trabajando','esperando','error')),
   detalle        text,

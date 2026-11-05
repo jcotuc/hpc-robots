@@ -1,0 +1,18 @@
+{
+  "name": "hpc-correos",
+  "private": true,
+  "type": "module",
+  "description": "Robot de correos: envía por Microsoft 365 las notificaciones de correos_cola (ConsumosCS)",
+  "scripts": {
+    "qa": "node --env-file=.env enviar-correos.mjs --qa",
+    "prod": "node --env-file=.env enviar-correos.mjs --prod",
+    "auto": "node --env-file=.env enviar-correos.mjs",
+    "listar": "node --env-file=.env enviar-correos.mjs --solo-listar",
+    "probar": "node --env-file=.env enviar-correos.mjs --probar",
+    "vista": "node vista-previa.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "nodemailer": "^6.9.16"
+  }
+}
