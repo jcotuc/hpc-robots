@@ -289,7 +289,26 @@ function textoCoincideCategoria(texto, cat) {
     .some((w) => t.includes(plano(w).replace(/s$/, '')))
 }
 /** ¿Se puede resolver solo una diferencia de SKU? 'mismo' (se queda el de CSHP), 'cambiar' (se pone el del formulario) o null */
-async function decisionSku(skuForm, skuCshp) {
+async function decisionSku(skuForm, skuCshp, numLlamada = null) {
+  const r = await decisionSkuPropia(skuForm, skuCshp)
+  if (r.accion || !numLlamada) return r
+  const orden = await ordenJefe(numLlamada, skuForm, skuCshp)
+  return orden ? { ...r, accion: 'cambiar', ordenJefe: orden } : r
+}
+/** Orden pendiente del Jefe para esta llamada (jefe_ordenes). Solo vale si los SKU siguen siendo los que él revisó */
+async function ordenJefe(numLlamada, skuForm, skuCshp) {
+  if (!sb) return null
+  const { data, error } = await sb.from('jefe_ordenes').select('id, sku_nuevo, sku_cshp, motivo')
+    .eq('num_llamada', String(numLlamada).toUpperCase()).eq('accion', 'cambiar_sku').eq('estado', 'pendiente').maybeSingle()
+  if (error || !data) return null
+  const igual = (x, y) => String(x ?? '').trim().replace(/^0+/, '') === String(y ?? '').trim().replace(/^0+/, '')
+  return igual(data.sku_nuevo, skuForm) && igual(data.sku_cshp, skuCshp) ? data : null
+}
+async function marcarOrden(orden, estado, resultado) {
+  if (!orden || !ESCRIBE_BANDEJA) return
+  await sb.from('jefe_ordenes').update({ estado, resultado: String(resultado || '').slice(0, 300), ejecutada_en: ahora() }).eq('id', orden.id).eq('estado', 'pendiente')
+}
+async function decisionSkuPropia(skuForm, skuCshp) {
   const catCSHP = await categoriaDeSku(skuCshp)
   if (!esCodigo(skuForm)) return { accion: textoCoincideCategoria(skuForm, catCSHP) ? 'mismo' : null, catForm: null, catCSHP }
   const catForm = await categoriaDeSku(skuForm)
@@ -605,7 +624,7 @@ async function procesar(page, a) {
   const sku = await skuCSHP(page)
   if (!PRUEBA && a.producto_sku && sku && sku.replace(/^0+/, '') !== String(a.producto_sku).trim().replace(/^0+/, '')) {
     const st = await statusActual(page)
-    const { accion, catForm, catCSHP } = await decisionSku(a.producto_sku, sku)
+    const { accion, catForm, catCSHP, ordenJefe: orden } = await decisionSku(a.producto_sku, sku, numero)
     const mismaCategoria = !!accion
     const abierta = !/cerrad/i.test(st) && (await vecesEnLog(page, 'T - Facturación')) === 0
     const desc = (c) => (c ? `${c.familia} · ${c.nombre}` : 'sin categoría en el catálogo')
@@ -617,7 +636,8 @@ async function procesar(page, a) {
       // Mismo tipo de producto: el SKU se corrige con el del formulario en el mismo "Modificar" de la resolución
       d.skuNuevo = String(a.producto_sku).trim()
       d.skuAntes = sku
-      log(`   ↳ SKU se corrige en CSHP: ${sku} → ${d.skuNuevo} (${desc(catForm)})`)
+      d.ordenJefe = orden || null
+      log(`   ↳ SKU se corrige en CSHP: ${sku} → ${d.skuNuevo} (${orden ? `orden del Jefe: ${orden.motivo}` : desc(catForm)})`)
     } else {
     const razon = !mismaCategoria ? `producto distinto: formulario ${a.producto_sku} (${esCodigo(a.producto_sku) ? desc(catForm) : 'texto, no SKU'}), CSHP ${sku} (${desc(catCSHP)})`
       : !abierta ? `misma categoría (${desc(catForm)}) pero la llamada en CSHP ya está ${st || 'facturada'}`
@@ -668,8 +688,21 @@ async function procesar(page, a) {
     }
   }
 
+  // Solo se digita desde los status donde CSHP permite pasar a Facturación (108). Si está en otro
+  // (p. ej. T - Pend. Repuesto), NO se toca nada y queda pendiente para un digitador.
+  const STATUS_OK = (process.env.CSHP_STATUS_PERMITIDOS || 'T - En Ruta').split('|').map((x) => normalizar(x))
+  if (actual && !STATUS_OK.includes(normalizar(actual))) {
+    const motivo = `En CSHP está en "${actual}" y desde ahí no se puede pasar a Facturación. No se cambió nada en CSHP`
+    await dejarPendiente(a, motivo)
+    anotar(destino, 'pendiente', { estado: 'pendiente', motivo })
+    log(`   ⏸️  ${numero}: ${motivo}`)
+    resumen(`${numero}  PENDIENTE  ${motivo}`)
+    return 'pendiente'
+  }
+
   await escribirResolucion(page, d)
-  if (d.skuNuevo) anotar(destino, 'sku', { antes: d.skuAntes, despues: d.skuNuevo })
+  if (d.skuNuevo) anotar(destino, 'sku', { antes: d.skuAntes, despues: d.skuNuevo, ...(d.ordenJefe ? { ordenJefe: d.ordenJefe.id } : {}) })
+  if (d.ordenJefe) await marcarOrden(d.ordenJefe, 'ejecutada', `SKU ${d.skuAntes} → ${d.skuNuevo}`)
   anotar(destino, 'resolucion', { tipologia: d.tipologiaCSHP })
   log(`   ↳ Resolución y tipología ${d.tipologiaCSHP} guardadas`)
 
@@ -753,7 +786,7 @@ async function main() {
   for (const a of lista) {
     if (!a.pendiente_en || !/^El SKU no coincide/i.test(a.pendiente_motivo || '')) continue
     const skuCshp = (a.pendiente_motivo.match(/CSHP (\d+)/) || [])[1]
-    const d = skuCshp ? await decisionSku(a.producto_sku, skuCshp).catch(() => ({})) : {}
+    const d = skuCshp ? await decisionSku(a.producto_sku, skuCshp, a.num_llamada).catch(() => ({})) : {}
     const resoluble = d.accion === 'mismo' || (d.accion === 'cambiar' && CAMBIAR_SKU_LISTO)
     if (!resoluble || /ya está/i.test(a.pendiente_motivo)) { a.saltar = true; porSku.push(a.num_llamada) }
   }

@@ -1,12 +1,15 @@
 /**
- * El Jefe del dungeon — revisa el trabajo de los robots SIN tocar nada (solo lectura) y:
- *   · abre / actualiza / cierra hallazgos en jefe_hallazgos (kkzo) → el dungeon lo muestra yendo al cuarto
- *   · avisa por correo (cola del robot de Correos) cuando abre un hallazgo ALTO
+ * El Jefe del dungeon — audita el trabajo de los robots y:
+ *   · abre / actualiza / cierra hallazgos en jefe_hallazgos (kkzo) → el dungeon lo muestra
+ *   · da ÓRDENES seguras a los robots (jefe_ordenes en ConsumosCS): hoy, cambiar SKU si es la misma familia
+ *   · avisa por correo (cola del robot de Correos) solo lo delicado (hallazgos ALTOS)
+ *   · en CSHP solo LEE (cshp.mjs): nunca modifica, cambia status ni acepta nada
  *   npm.cmd run revisar   (QA: solo imprime lo que encontró)
  *   npm.cmd run prod      (guarda, reporta y avisa)
  */
 import { crearMonitor } from '../shared/monitor.mjs'
-import { mkdirSync, appendFileSync } from 'node:fs'
+import { mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { abrirCSHP, cerrarCSHP, leerLlamada, cshpResponde } from './cshp.mjs'
 
 const E = process.env, args = process.argv.slice(2)
 const PROD = args.includes('--prod') || (!args.includes('--qa') && /^prod/i.test(E.AMBIENTE || ''))
@@ -15,6 +18,11 @@ const CC = { nombre: 'ConsumosCS', url: (E.CONSUMOS_URL || '').replace(/\/$/, ''
 const ALERTAR_A = String(E.ALERTAR_A || '').split(',').map((x) => x.trim()).filter(Boolean)
 const ROBOT_DIG = (E.DIGITADORES_ROBOT || 'robot-digitadores').trim().toLowerCase()
 const MIN = (k, d) => Number(E[k] || d)
+const CSHP = { base: (E.CSHP_PROD_URL || E.CSHP_URL || '').replace(/\/(Login\.aspx)?$/i, ''), usuario: E.CSHP_PROD_USUARIO || E.CSHP_USUARIO, password: E.CSHP_PROD_PASSWORD || E.CSHP_PASSWORD }
+const MAX_AUDITAR = Number(E.MAX_AUDITAR || 10)   // llamadas que abre en CSHP por corrida
+const AUDITAR_DESDE = (E.AUDITAR_DESDE || '').trim()   // solo se auditan llamadas digitadas desde esta fecha (ISO)
+const normalizar = (t) => String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
+let cshpCaido = null   // si CSHP no responde, los errores de los robots no se mandan por correo (se avisa una sola vez)
 const mon = crearMonitor('jefe', { intervaloSeg: 300, activo: PROD })
 
 /* Horario de cada robot (igual que su programar-tarea.cmd) para no alarmar fuera de turno */
@@ -74,15 +82,24 @@ async function revisarRobots() {
       out.push({ clave: `error:${s.robot}|${s.pc}`, robot: s.robot, pc: s.pc, centro: s.centro, severidad: 'alta',
         titulo: `${n} terminó con error`, detalle: corto(s.ultimo_error || s.detalle, 500) })
   }
+  const caidos = out.filter((h) => h.clave.startsWith('caido:') || h.clave.startsWith('error:'))
+  if (caidos.length >= 2) {
+    const r = await cshpResponde(CSHP.base)
+    if (!r.ok) cshpCaido = r
+    out.push({ clave: 'robots:varios', robot: 'jefe', severidad: r.ok ? 'alta' : 'media',
+      titulo: r.ok ? `${caidos.length} robots fallando a la vez (CSHP sí responde)` : `${caidos.length} robots fallando: parece ser CSHP`,
+      detalle: `${caidos.map((h) => NOMBRES[h.robot] || h.robot).join(', ')}. ${r.ok ? `CSHP respondió en ${r.ms} ms: revisar red/PCs.` : `CSHP no responde (${r.detalle}).`}` })
+  }
   return out
 }
 
 async function revisarCitas() {
   const out = []
-  const revisar = await q(KK, 'cita_equipos?select=orden,external_id,sync_error,citas!inner(numero)&sync_status=eq.needs_review&limit=50')
-  if (revisar.length) out.push({ clave: 'citas:revisar', robot: 'citas', severidad: 'media',
-    titulo: `${revisar.length} equipo(s) de citas para revisar a mano`,
-    detalle: revisar.slice(0, 10).map((e) => `Cita ${e.citas.numero}-${e.orden}${e.external_id ? ` (${e.external_id})` : ''}: ${corto(e.sync_error, 120)}`).join(' · ') })
+  // Error al crear la llamada (en cualquier intento): needs_review, rechazada, o "listo" con error de un intento anterior
+  const conError = await q(KK, `cita_equipos?select=orden,external_id,sync_error,sync_status,sync_retries,citas!inner(numero)&sync_error=not.is.null&sync_status=in.(listo,needs_review,rejected)&or=(sync_status.neq.rejected,last_sync_attempt_at.gte.${haceMin(7 * 24 * 60)})&limit=50`)
+  if (conError.length) out.push({ clave: 'citas:error', robot: 'citas', severidad: 'alta',
+    titulo: `${conError.length} equipo(s) de citas con error al crear la llamada`,
+    detalle: conError.slice(0, 10).map((e) => `Cita ${e.citas.numero}-${e.orden}${e.external_id ? ` (${e.external_id})` : ''} [${e.sync_status === 'listo' ? `reintentando ${e.sync_retries}/3` : e.sync_status === 'rejected' ? 'rechazada' : 'revisar a mano'}]: ${corto(e.sync_error, 120)}`).join(' · ') })
   const lim = MIN('CITAS_ATORADA_MIN', 30)
   if (minEnHorario('citas') !== null) {
     const atoradas = await q(KK, `cita_equipos?select=orden,citas!inner(numero)&sync_status=eq.listo&external_id=is.null&revisado_at=lt.${haceMin(lim)}&limit=50`)
@@ -90,10 +107,6 @@ async function revisarCitas() {
       titulo: `${atoradas.length} cita(s) lista(s) sin llamada hace más de ${lim} min`,
       detalle: `El robot de Citas no las está tomando: ${atoradas.slice(0, 10).map((e) => `${e.citas.numero}-${e.orden}`).join(', ')}` })
   }
-  const rechazadas = await q(KK, `cita_equipos?select=orden,sync_error,citas!inner(numero)&sync_status=eq.rejected&last_sync_attempt_at=gte.${haceMin(24 * 60)}&limit=50`)
-  if (rechazadas.length) out.push({ clave: 'citas:rechazadas', robot: 'citas', severidad: 'alta',
-    titulo: `${rechazadas.length} equipo(s) de citas rechazados (3 intentos fallidos) en 24 h`,
-    detalle: rechazadas.slice(0, 10).map((e) => `Cita ${e.citas.numero}-${e.orden}: ${corto(e.sync_error, 120)}`).join(' · ') })
   return out
 }
 
@@ -115,7 +128,8 @@ async function revisarCorreos() {
 
 async function revisarDigitadores() {
   const out = []
-  const pend = await q(CC, `llamadas_actualizaciones?select=num_llamada,pendiente_motivo&pendiente_por=eq.${encodeURIComponent(ROBOT_DIG)}&digitado_en=is.null&limit=50`)
+  const pend = (await q(CC, `llamadas_actualizaciones?select=num_llamada,pendiente_motivo&pendiente_por=eq.${encodeURIComponent(ROBOT_DIG)}&digitado_en=is.null&limit=100`))
+    .filter((a) => !/^El SKU no coincide/i.test(a.pendiente_motivo || ''))
   if (pend.length) out.push({ clave: 'digitadores:pendientes', robot: 'digitadores', severidad: 'media',
     titulo: `${pend.length} llamada(s) que el robot dejó pendientes`,
     detalle: pend.slice(0, 10).map((a) => `${a.num_llamada}: ${corto(a.pendiente_motivo, 100)}`).join(' · ') })
@@ -135,11 +149,100 @@ async function revisarDigitadores() {
   return out
 }
 
-const REVISIONES = { robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores }
+/* Familia y categoría de un SKU según el catálogo de la Bandeja (igual que Digitadores) */
+async function categoriaDeSku(sku) {
+  const r = await q(CC, `llamadas_producto_categorias?select=categoria_id,llamadas_categorias(nombre,familia)&sku=eq.${encodeURIComponent(String(sku).trim())}&limit=1`)
+  const d = r?.[0]; if (!d) return null
+  return { id: d.categoria_id, nombre: d.llamadas_categorias?.nombre || '', familia: d.llamadas_categorias?.familia || '' }
+}
+const desc = (c) => (c ? `${c.familia} · ${c.nombre}` : 'sin categoría en el catálogo')
+async function revisarSku() {
+  const out = []
+  const pend = await q(CC, `llamadas_actualizaciones?select=num_llamada,producto_sku,pendiente_motivo&pendiente_por=eq.${encodeURIComponent(ROBOT_DIG)}&digitado_en=is.null&pendiente_motivo=ilike.El%20SKU%20no%20coincide*&limit=50`)
+  if (!pend.length) return out
+  const ordenes = await q(CC, `jefe_ordenes?select=num_llamada,estado,sku_nuevo&accion=eq.cambiar_sku&estado=eq.pendiente`)
+  for (const a of pend) {
+    const num = a.num_llamada.toUpperCase(), motivo = a.pendiente_motivo || ''
+    const skuCshp = (motivo.match(/CSHP (\d+)/) || [])[1], skuForm = String(a.producto_sku || '').trim()
+    if (ordenes.some((o) => o.num_llamada.toUpperCase() === num)) continue   // ya tiene orden: la ejecuta Digitadores
+    const avisar = (titulo, detalle) => out.push({ clave: `sku:${num}`, robot: 'digitadores', severidad: 'alta', titulo, detalle })
+    if (/ya est[aá]|facturad/i.test(motivo)) { avisar(`${num}: SKU distinto y la llamada ya está facturada`, `${corto(motivo, 300)}. El Jefe no la toca: decidir a mano.`); continue }
+    if (!skuCshp || !/^\d+$/.test(skuForm)) { avisar(`${num}: SKU del formulario no es un código`, `Formulario "${skuForm}", CSHP ${skuCshp || '?'}. Revisar a mano.`); continue }
+    const [cf, cc] = [await categoriaDeSku(skuForm), await categoriaDeSku(skuCshp)]
+    if (!cf || !cc || !cf.familia || !cc.familia) { avisar(`${num}: SKU sin categoría en el catálogo`, `Formulario ${skuForm} (${desc(cf)}), CSHP ${skuCshp} (${desc(cc)}). Agregar al catálogo o decidir a mano.`); continue }
+    if (normalizar(cf.familia) !== normalizar(cc.familia)) { avisar(`${num}: SKU de otra familia`, `Formulario ${skuForm} (${desc(cf)}) vs CSHP ${skuCshp} (${desc(cc)}). Producto distinto: confirmar con el técnico.`); continue }
+    // Misma familia → orden a Digitadores
+    out.push({ orden: { num_llamada: num, accion: 'cambiar_sku', sku_nuevo: skuForm, sku_cshp: skuCshp, motivo: `Misma familia ${cf.familia}: ${desc(cc)} → ${desc(cf)}` } })
+  }
+  return out
+}
+
+/* LLM21 / LLS digitadas: ¿pasaron (o no) a Logística - Envío como debían? — se revisa en CSHP (solo lectura) */
+const AUD = 'auditadas.json'
+const leerAud = () => { try { return JSON.parse(readFileSync(AUD, 'utf8')) } catch { return {} } }
+const debeLogistica = (l) => {
+  const esLLS = /^LLS/i.test(l.numero), envio = /^ENV[IÍ]O\b/i.test(l.guiaRecep)
+  const cemaco = /CEMACO/i.test(l.cliente), ope = /\bOPE-\d/i.test(l.comentario)
+  return { debe: esLLS || envio || (cemaco && ope), dudosa: !esLLS && !envio && cemaco !== ope, razon: esLLS ? 'LLS' : envio ? `guía de recepción "${l.guiaRecep}"` : cemaco && ope ? 'Cemaco con OPE-' : cemaco ? 'cliente Cemaco SIN OPE-' : ope ? 'OPE- pero cliente no es Cemaco' : 'ni envío ni Cemaco' }
+}
+async function revisarCshp() {
+  const out = []
+  if (!CSHP.base || !CSHP.usuario) throw new Error('Faltan CSHP_PROD_URL / CSHP_PROD_USUARIO / CSHP_PROD_PASSWORD en .env')
+  const r = await cshpResponde(CSHP.base)
+  if (!r.ok) { cshpCaido = r; out.push({ clave: 'cshp:caido', robot: 'jefe', severidad: 'alta', titulo: 'CSHP no responde', detalle: `${CSHP.base} · ${r.detalle} (${r.ms} ms). Los robots que usan CSHP van a fallar hasta que vuelva.` }); return out }
+  const aud = leerAud()
+  // digitadas por el robot en los últimos 2 días
+  const evs = await q(KK, `robot_eventos?select=llamada,mensaje,created_at&robot=eq.digitadores&tipo=eq.ok&llamada=not.is.null&created_at=gte.${[haceMin(2 * 24 * 60), AUDITAR_DESDE].filter(Boolean).sort().pop()}&created_at=lt.${haceMin(2)}&order=created_at&limit=500`)
+  const robotLaPaso = new Map(evs.map((e) => [e.llamada.toUpperCase(), /log[ií]stica/i.test(e.mensaje || '')]))
+  const porRevisar = [...new Set(evs.filter((e) => /DIGITADA/i.test(e.mensaje || '')).map((e) => e.llamada.toUpperCase()))]
+    .filter((n) => !aud[n] || aud[n].estado === 'alerta')
+    .sort((a, b) => (aud[a]?.estado === 'alerta' ? 1 : 0) - (aud[b]?.estado === 'alerta' ? 1 : 0))
+    .slice(0, MAX_AUDITAR)
+  if (porRevisar.length) {
+    let cshp = null
+    try {
+      cshp = await abrirCSHP(CSHP)
+      for (const n of porRevisar) {
+        try {
+          const l = await leerLlamada(cshp, n), d = debeLogistica(l)
+          const ok = d.debe === l.pasoPorLogistica && !d.dudosa
+          aud[n] = { estado: ok ? 'ok' : 'alerta', revisada: new Date().toISOString(), debe: d.debe, paso: l.pasoPorLogistica, status: l.statusActual, razon: d.razon,
+            robot: robotLaPaso.get(n) || false, logistica: l.logistica, campos: `guía recep. "${l.guiaRecep || '—'}" · cliente "${corto(l.cliente, 40) || '—'}" · comentario "${corto(l.comentario, 60) || '—'}"` }
+          log(`AUDITADA ${n}: ${ok ? 'OK' : 'ALERTA'} · ${d.razon} · status ${l.statusActual}${l.pasoPorLogistica ? ' · pasó por Logística' : ''}`)
+        } catch (e) { log(`No se pudo auditar ${n}: ${corto(e)}`) }
+      }
+    } catch (e) {
+      if (/Cannot find (package|module) 'playwright'/i.test(String(e))) {
+        out.push({ clave: 'jefe:revision:cshp', robot: 'jefe', severidad: 'media', titulo: 'Falta instalar Playwright en la carpeta jefe', detalle: 'Correr npm.cmd install en C:\\Users\\jcotuc\\source\\repos\\hpc-robots\\jefe' })
+      } else {
+        cshpCaido = { detalle: corto(e) }
+        out.push({ clave: 'cshp:caido', robot: 'jefe', severidad: 'alta', titulo: 'El Jefe no pudo entrar a CSHP', detalle: corto(e, 300) })
+      }
+    } finally { await cerrarCSHP(cshp) }
+    if (PROD) writeFileSync(AUD, JSON.stringify(aud, null, 1))
+  }
+  // hallazgos de todas las que siguen en alerta (se cierran cuando una nueva revisión sale bien)
+  for (const [n, a] of Object.entries(aud)) {
+    if (a.estado !== 'alerta') continue
+    const titulo = a.debe && !a.paso ? `${n} debía pasar a Logística - Envío y quedó en "${a.status}"`
+      : !a.debe && a.paso ? (a.robot ? `${n}: el robot la pasó a Logística - Envío sin ser envío ni Cemaco`
+                                     : `${n}: Digitadores la dejó en Facturación, pero alguien la pasó a Logística - Envío`)
+      : `${n}: señal de Cemaco incompleta (${a.razon})`
+    const porque = !a.debe && a.paso && !a.robot ? ' ¿Es un envío que el robot no reconoce (falta una regla) o se movió por error?' : ''
+    out.push({ clave: `llm:${n}`, robot: 'digitadores', severidad: a.debe !== a.paso ? 'alta' : 'media', titulo,
+      detalle: `CSHP ${horaGT(a.revisada)}: ${a.campos || a.razon}. Status: ${a.status || '?'}.${a.logistica ? ` Cambio a Logística: ${a.logistica}.` : ''}${porque}` })
+  }
+  // limpiar auditadas viejas (> 7 días)
+  for (const [n, a] of Object.entries(aud)) if (a.estado === 'ok' && Date.now() - new Date(a.revisada).getTime() > 7 * 86400000) delete aud[n]
+  return out
+}
+
+const REVISIONES = { cshp: revisarCshp, robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores, sku: revisarSku }
 
 /* =============== Hallazgos: abrir / actualizar / cerrar =============== */
 async function avisar(h, abierto) {
   if (!PROD || !ALERTAR_A.length || h.severidad !== 'alta') return false
+  if (cshpCaido && /^(error|caido):/.test(h.clave)) return false   // ya se avisó 'CSHP no responde'
   const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#111827">
     <div style="background:#b91c1c;color:#fff;padding:10px 16px;font-weight:600">JEFE DEL DUNGEON · ALERTA</div>
     <div style="padding:16px"><h3 style="margin:0 0 10px">${esc(h.titulo)}</h3>
@@ -163,9 +266,18 @@ async function main() {
       encontrados.push({ clave: `jefe:revision:${nombre}`, robot: 'jefe', severidad: 'media', titulo: `El Jefe no pudo revisar ${nombre}`, detalle: corto(e, 400) })
     }
   }
+  const ordenes = encontrados.filter((x) => x.orden).map((x) => x.orden)
+  encontrados.splice(0, encontrados.length, ...encontrados.filter((x) => !x.orden))
+  ordenes.forEach((o) => log(`ORDEN ${o.accion} ${o.num_llamada}: ${o.sku_cshp} → ${o.sku_nuevo} (${o.motivo})`))
   encontrados.forEach((h) => log(`${h.severidad === 'alta' ? 'ALTA ' : 'MEDIA'} ${h.titulo} — ${h.detalle || ''}`))
-  if (!encontrados.length) log('Todo en orden.')
+  if (!encontrados.length && !ordenes.length) log('Todo en orden.')
   if (!PROD) return
+  for (const o of ordenes) {
+    try {
+      await q(CC, 'jefe_ordenes', { method: 'POST', prefer: 'return=minimal', body: o })
+      mon.ok(o.num_llamada, `Orden: cambiar SKU ${o.sku_cshp} → ${o.sku_nuevo} · ${o.motivo}`)
+    } catch (e) { if (!/duplicate|23505/.test(String(e))) log(`No se pudo crear la orden ${o.num_llamada}: ${corto(e)}`) }
+  }
 
   const abiertos = await q(KK, 'jefe_hallazgos?select=id,clave,abierto_en,avisado_en&cerrado_en=is.null')
   const ahora = new Date().toISOString()
@@ -183,7 +295,8 @@ async function main() {
     }
   }
   // se cierran solo los que ya no aparecen Y cuya revisión sí corrió (si una revisión falló, no se cierra lo suyo)
-  const prefijo = (c) => c.startsWith('caido:') || c.startsWith('error:') ? 'robots' : c.startsWith('jefe:revision:') ? c.split(':')[2] : c.split(':')[0]
+  const REV = { caido: 'robots', error: 'robots', robots: 'robots', citas: 'citas', correos: 'correos', digitadores: 'digitadores', sku: 'sku', llm: 'cshp', cshp: 'cshp' }
+  const prefijo = (c) => c.startsWith('jefe:revision:') ? c.split(':')[2] : REV[c.split(':')[0]] || c.split(':')[0]
   for (const a of abiertos) {
     if (encontrados.some((h) => h.clave === a.clave)) continue
     const rev = prefijo(a.clave)

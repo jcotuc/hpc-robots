@@ -7,5 +7,8 @@
     "revisar": "node --env-file=.env revisar.mjs --qa",
     "prod": "node --env-file=.env revisar.mjs --prod",
     "auto": "node --env-file=.env revisar.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.64.1"
   }
 }

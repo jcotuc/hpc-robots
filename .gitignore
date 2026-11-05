@@ -10,3 +10,4 @@ prueba.json
 # Grabaciones de Playwright codegen (pueden traer datos reales)
 grabaciones/
 *.antes-monitor
+auditadas.json
