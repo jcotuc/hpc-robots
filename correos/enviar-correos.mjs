@@ -152,7 +152,7 @@ async function main() {
         const final = intentos >= MAX_INTENTOS
         await sb.from('correos_cola').update({ estado: final ? 'error' : 'pendiente', intentos, ultimo_error: corto(e) }).eq('id', f.id)
         resumen(`${final ? 'ERROR' : 'REINTENTAR'} ${f.tipo} ${ref} (intento ${intentos}/${MAX_INTENTOS}): ${corto(e)}`)
-        if (final) mon.error(e, ref); else mon.revisar(ref, `Reintento ${intentos}: ${corto(e)}`)
+        if (final) mon.error(`${f.tipo} · ${corto(e)}`, ref); else mon.revisar(ref, `${f.tipo} · Reintento ${intentos}: ${corto(e)}`)
       }
     }
     mon.fin(`${ok} enviado(s)${fallo ? ` · ${fallo} con falla` : ''}`)

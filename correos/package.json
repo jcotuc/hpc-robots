@@ -9,7 +9,8 @@
     "auto": "node --env-file=.env enviar-correos.mjs",
     "listar": "node --env-file=.env enviar-correos.mjs --solo-listar",
     "probar": "node --env-file=.env enviar-correos.mjs --probar",
-    "vista": "node vista-previa.mjs"
+    "vista": "node vista-previa.mjs",
+    "vivo": "node ver-vivo.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.110.0",

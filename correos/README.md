@@ -20,6 +20,7 @@ SQL (una vez, en Supabase ConsumosCS): `sql\01_correos_cola.sql`, luego `sql\02_
 
 ## Comandos
 ```
+npm.cmd run vivo               monitor en vivo (o doble clic en monitor.cmd)
 npm.cmd run listar             cola pendiente / con error (no envía)
 npm.cmd run prod               envío real
 schtasks /Run /TN "HPC Correos"
