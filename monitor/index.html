@@ -267,21 +267,32 @@ function layout() {
   const box = document.getElementById('mapaBox'), n = keys.length;
   const cw = (box.clientWidth || 800) - 4;
   const ch = pantallaCompleta.matches ? (box.clientHeight || 600) - 4 : Infinity;   // celular: solo el ancho manda
-  // prueba 1..n columnas y se queda con la que deja los cuartos más grandes
-  let mejor = null;
-  for (let c = 1; c <= n; c++) {
-    const r = Math.ceil(n / c), w = 2 * M + c * RW + (c - 1) * G, h = 2 * M + r * RH + (r - 1) * G;
-    const esc = Math.min(cw / w, ch / h);
-    if (!mejor || esc > mejor.esc + 1e-6) mejor = { c, r, w, h, esc };
+  const medir = celdas => {
+    const c0 = Math.min(...celdas.map(x => x.c)), r0 = Math.min(...celdas.map(x => x.r));
+    const cs = Math.max(...celdas.map(x => x.c)) - c0 + 1, rs = Math.max(...celdas.map(x => x.r)) - r0 + 1;
+    const w = 2 * M + cs * RW + (cs - 1) * G, h = 2 * M + rs * RH + (rs - 1) * G;
+    return { celdas: celdas.map(x => ({ ...x, c: x.c - c0, r: x.r - r0 })), cols: cs, rows: rs, w, h, esc: Math.min(cw / w, ch / h) };
+  };
+  const opciones = [];
+  const jk = keys.find(esGlobal), otros = keys.filter(k => k !== jk);
+  if (jk && otros.length <= 8 && cw >= 560) {
+    // Jefe al centro (fila 1, columna 1); alrededor: primero los lados, luego las esquinas
+    const H = [[1, 0], [1, 2], [0, 1], [2, 1], [0, 0], [0, 2], [2, 0], [2, 2]];   // izq, der, arriba, abajo...
+    const V = [[0, 1], [2, 1], [1, 0], [1, 2], [0, 0], [0, 2], [2, 0], [2, 2]];   // arriba, abajo, izq, der...
+    [H, V].forEach(o => opciones.push(medir([{ k: jk, r: 1, c: 1 }, ...otros.map((k, i) => ({ k, r: o[i][0], c: o[i][1] }))])));
+  } else {
+    const lista = jk ? [jk, ...otros] : keys;
+    for (let c = 1; c <= n; c++) opciones.push(medir(lista.map((k, i) => ({ k, r: Math.floor(i / c), c: i % c }))));
   }
-  cols = mejor.c; const rows = mejor.r; MW = mejor.w; MH = mejor.h;
+  const mejor = opciones.reduce((a, b) => (b.esc > a.esc + 1e-6 ? b : a));
+  cols = mejor.cols; MW = mejor.w; MH = mejor.h;
   const dpr = window.devicePixelRatio || 1;
   cv.style.width = Math.floor(MW * mejor.esc) + 'px'; cv.style.height = Math.floor(MH * mejor.esc) + 'px';
   S = mejor.esc * dpr;
   cv.width = Math.round(MW * S); cv.height = Math.round(MH * S);
   const viejos = new Map(cuartos); cuartos.clear();
-  keys.forEach((k, i) => cuartos.set(k, { k, x: M + (i % cols) * (RW + G), y: M + Math.floor(i / cols) * (RH + G), c: i % cols, r: Math.floor(i / cols), fase: viejos.get(k)?.fase ?? Math.random() * 8000 }));
-  construirFondo(keys.length, rows);
+  mejor.celdas.forEach(({ k, c, r }) => cuartos.set(k, { k, x: M + c * (RW + G), y: M + r * (RH + G), c, r, fase: viejos.get(k)?.fase ?? Math.random() * 8000 }));
+  construirFondo(n, mejor.rows);
   renderCards();
 }
 let ultimaFirma = '';
@@ -424,7 +435,7 @@ function cuartoBase(q, nombre, col, dim, t) {
   const hayIzq = [...cuartos.values()].some(o => o.r === q.r && o.c === q.c - 1);
   const hayDer = [...cuartos.values()].some(o => o.r === q.r && o.c === q.c + 1);
   const hayAbajo = [...cuartos.values()].some(o => o.c === q.c && o.r === q.r + 1);
-  const hayArriba = q.r > 0;
+  const hayArriba = [...cuartos.values()].some(o => o.c === q.c && o.r === q.r - 1);
   if (hayIzq) px(0, 76, 4, 16, '#2a2333');
   if (hayDer) px(RW - 4, 76, 4, 16, '#2a2333');
   if (hayAbajo) px(RW / 2 - 9, RH - 4, 18, 4, '#2a2333');
@@ -591,40 +602,45 @@ function humo(x, y, t0) {
   ctx.globalAlpha = 1;
 }
 function salaJefatura(q, s, est, t) {
-  const fuera = !!jefeVa;
+  const caido = ['caido', 'sindatos'].includes(est);
   // tablero de alertas en el muro
   px(52, 28, 80, 30, '#1f2937'); px(52, 28, 80, 2, '#f59e0b'); px(53, 30, 78, 27, '#111827');
-  texto(`ALERTAS ${hallazgos.length}`, 92, 37, 4, hallazgos.length ? '#fca5a5' : '#86efac', true);
-  if (!hallazgos.length) texto('TODO EN ORDEN', 92, 48, 4, '#86efac', true);
+  texto(caido ? 'JEFE SIN REPORTAR' : `ALERTAS ${hallazgos.length}`, 92, 37, 4, caido ? '#9ca3af' : hallazgos.length ? '#fca5a5' : '#86efac', true);
+  if (!hallazgos.length && !caido) texto('TODO EN ORDEN', 92, 48, 4, '#86efac', true);
   hallazgos.slice(0, 4).forEach((h, i) => { px(57, 41 + i * 4, 3, 3, HALLAZGO_COLOR(h)); px(62, 42 + i * 4, 30 + (h.titulo.length * 7) % 36, 1, '#9ca3af'); });
   // escritorio grande, silla, planta y trofeo
+  px(86, 50, 14, 18, '#3f3f46'); px(85, 66, 16, 4, '#27272a');                                                // silla
+  const d = jefeVa && !caido ? cuartos.get(jefeVa) : null;
+  if (!d) {   // sentado en su escritorio
+    const pose = caido || est === 'durmiendo' ? 'dormido' : 'sentado';
+    jefe(93, 58 + (est === 'trabajando' ? Math.floor(t / 400) % 2 : 0), t, { pose, est: caido ? 'esperando' : est });
+    if (pose === 'dormido') zzz(100, 46, t, '196,181,253');
+    else if (est === 'trabajando') globo(93, 40, 'REVISANDO');
+  }
   px(58, 72, 68, 5, '#7c5a3a'); px(58, 72, 68, 1, '#a07a50'); px(58, 77, 68, 18, '#5c4128'); px(62, 80, 60, 1, '#4a3420');
   px(70, 66, 12, 6, '#f9fafb'); px(100, 62, 16, 10, '#1f2937'); px(102, 64, 12, 6, hallazgos.length ? '#7f1d1d' : '#14532d');
   px(20, 84, 8, 10, '#78350f'); px(17, 74, 14, 10, '#16a34a'); px(20, 70, 8, 6, '#22c55e');                  // planta
   px(150, 60, 22, 3, '#5c4128'); px(156, 52, 8, 6, '#facc15'); px(158, 58, 4, 2, '#ca8a04');                  // trofeo
-  px(86, 50, 14, 18, '#3f3f46'); px(85, 66, 16, 4, '#27272a');                                                // silla
-  if (['caido', 'sindatos'].includes(est)) return null;
-  if (!fuera) {
-    const pose = est === 'durmiendo' ? 'dormido' : 'sentado';
-    jefe(93, 58 + (est === 'trabajando' ? Math.floor(t / 400) % 2 : 0), t, { pose, est });
-    if (est === 'durmiendo') zzz(100, 46, t, '196,181,253');
-    else if (est === 'trabajando') globo(93, 40, 'REVISANDO');
-    if (jefeAntes && jefeAntes !== q.k) humo(93, 64, jefeDesde);
-  } else {
-    const k = jefeVa, nombre = meta(k.split('|')[0]).nombre.toUpperCase();
-    px(118, 66, 22, 12, '#fef3c7'); px(118, 66, 22, 1, '#f59e0b');
-    texto('FUE A', 129, 71, 3, '#78350f', true); texto(nombre.slice(0, 8), 129, 76, 3, '#78350f', true);
-    humo(93, 64, jefeDesde);
+  if (d) {    // de pie frente al tablero, señalando hacia el cuarto con problema
+    const h = hallazgosDe(jefeVa)[0], dx = d.x - q.x, dy = d.y - q.y, ang = Math.atan2(dy, dx);
+    const x = 138, y = 82;
+    jefe(x, y + (Math.floor(t / 300) % 2), t, { pose: 'pie', est: 'trabajando', tabla: true });
+    // flecha que apunta al cuarto
+    for (let i = 0; i < 4; i++) px(x + Math.cos(ang) * (12 + i * 3) - 1, y - 2 + Math.sin(ang) * (12 + i * 3) - 1, 3, 3, i === 3 ? '#fde047' : '#f59e0b');
+    globo(x, y - 26, (Math.floor(t / 1200) % 2 ? meta(jefeVa.split('|')[0]).nombre.toUpperCase() : (h?.severidad === 'alta' ? '¡¡REVISEN!!' : '¿QUÉ PASA?')), h ? HALLAZGO_COLOR(h) : '#f59e0b', '#111');
   }
   return null;
 }
-function jefeDeVisita(q, t) {
-  const hs = hallazgosDe(q.k), x = RW - 26, y = 80;
-  humo(x, y - 6, jefeDesde);
-  if (performance.now() - jefeDesde < 250) return;
-  jefe(x + Math.sin(t / 500) * 3, y, t, { pose: Math.floor(t / 1800) % 2 ? 'camina' : 'pie', tabla: true, est: 'trabajando' });
-  const txt = Math.floor(t / 1500) % 2 ? (hs[0]?.severidad === 'alta' ? '!!' : '?') : 'JEFE';
-  globo(x + 1, y - 26, txt, hs[0] ? HALLAZGO_COLOR(hs[0]) : '#f59e0b', '#111');
+/* En el cuarto con problema: aviso del Jefe colgado en el muro */
+function avisoDelJefe(q, t) {
+  const hs = hallazgosDe(q.k); if (!hs.length) return;
+  const alta = hs.some(h => h.severidad === 'alta'), c = alta ? '#ef4444' : '#f59e0b';
+  const x = RW - 34, y = 30, sube = Math.floor(t / 500) % 2;
+  px(x + 9, y - 2, 2, 3, '#9ca3af');                                       // clavo
+  px(x, y + 1, 20, 16, '#fef3c7'); px(x, y + 1, 20, 3, c);                 // hoja
+  px(x + 3, y + 7, 6, 4, '#111827'); px(x + 4, y + 5, 4, 2, '#111827');    // sombrero del jefe
+  texto(alta ? '!!' : '?', x + 15, y + 13, 5, c, true);
+  if (sube) { ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.strokeRect(x - .5, y + .5, 21, 17); }
 }
 
 function salaGenerica(q, s, est, t) {
@@ -658,7 +674,7 @@ function dibujarCuarto(q, t) {
       robot(r.x + sh, r.y, m.color, { t, est }); globo(r.x + 1, r.y - 18, s?.llamada ? '! ' + corto(s.llamada) : '!', '#ef4444', '#fff');
     } else if (est === 'durmiendo') { robot(r.x, r.y, m.color, { pose: 'dormido', t, est }); zzz(r.x + 7, r.y - 14, t, '196,181,253'); }
   }
-  if (est === 'caido' || est === 'sindatos') {
+  if ((est === 'caido' || est === 'sindatos') && !m.global) {
     const lx = (r?.x ?? RW / 2) - 7, ly = 84;
     px(lx, ly + 2, 14, 14, '#6b7280'); px(lx + 2, ly, 10, 2, '#6b7280'); px(lx - 2, ly + 16, 18, 3, '#4b5563');
     texto(est === 'caido' ? 'RIP' : '?', lx + 7, ly + 11, 4, '#d1d5db', true);
@@ -668,7 +684,7 @@ function dibujarCuarto(q, t) {
       px(gx + 2, gy + 3, 1, 2, '#111'); px(gx + 5, gy + 3, 1, 2, '#111'); ctx.globalAlpha = 1;
     }
   }
-  if (jefeVa === q.k) jefeDeVisita(q, t);
+  if (!m.global) avisoDelJefe(q, t);
   // capas de estado
   if (est === 'caido' || est === 'sindatos') { ctx.fillStyle = 'rgba(5,4,8,.55)'; ctx.fillRect(0, 0, RW, RH); }
   if (est === 'durmiendo') { ctx.fillStyle = 'rgba(20,10,60,.45)'; ctx.fillRect(0, 0, RW, RH); px(RW - 30, 30, 8, 8, '#e9d5ff'); px(RW - 27, 30, 6, 6, 'rgba(20,10,60,.9)'); }
@@ -685,7 +701,7 @@ function loop(t) {
   if (fondo) ctx.drawImage(fondo, 0, 0, MW, MH);
   dibujarAntorchas(t);
   const d = destinoJefe();
-  if (d !== jefeVa) { jefeAntes = jefeVa ?? [...cuartos.keys()].find(esGlobal); jefeVa = d; jefeDesde = performance.now(); }
+  jefeVa = d;
   cuartos.forEach(q => dibujarCuarto(q, t));
   requestAnimationFrame(loop);
 }
