@@ -35,6 +35,9 @@ main{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:12px}
 .luces{display:flex;gap:2px}
 .luces i{width:6px;height:6px;display:block}
 .centro-tag{font-size:11px;color:var(--muted)}
+.tip{position:fixed;z-index:10;pointer-events:none;background:#0f0c15;border:2px solid var(--gold);padding:8px 10px;font-size:12px;max-width:300px;display:grid;gap:3px;box-shadow:0 6px 18px rgba(0,0,0,.5)}
+.tip b.n{font-family:"Press Start 2P",monospace;font-size:9px}
+.tip .l{display:flex;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #mapa{display:block;image-rendering:pixelated;image-rendering:crisp-edges;cursor:pointer}
 .lateral{display:flex;flex-direction:column;gap:12px;min-height:0}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;align-content:start}
@@ -93,6 +96,7 @@ aside h2{font-family:"Press Start 2P",monospace;font-size:10px;margin:0;padding:
 <main>
   <div class="izq">
     <nav class="niveles" id="niveles" aria-label="Centros de servicio"></nav>
+    <div class="tip" id="tip" hidden></div>
     <div class="mapa" id="mapaBox"><canvas id="mapa" aria-label="Mapa del dungeon con un cuarto por robot"></canvas></div>
   </div>
   <div class="lateral">
@@ -142,6 +146,11 @@ const ROBOTS = [
     ] },
   // { id: 'mimo', nombre: 'MiMo', sala: 'recepcion', color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
 ];
+/* Flujos reales entre robots: la misma llamada pasa de un robot al otro.
+   cuando = texto en el reporte OK del robot origen que indica que la mandó (ej. "· logística") */
+const FLUJOS = [
+  { de: 'digitadores', a: 'guias', cuando: /log[ií]stica/i, etiqueta: 'A LOGÍSTICA' },
+];
 const GRACIA_SEG = 90; // margen extra antes de declarar "caído" (intervalo*2 + gracia)
 /* ============================================ */
 
@@ -160,6 +169,11 @@ const areaStats = new Map(); // robot|pc|area -> {ok, err, reint, ultimo}
 const ultimoOk = new Map();  // robot|pc -> fecha del último OK (para animar "recién terminado")
 let eventos = [];
 let hallazgos = [];          // jefe_hallazgos abiertos
+const viajes = [];           // mensajeros caminando por los corredores
+const aviones = [];          // correos enviados (avioncitos de papel)
+const festejos = new Map();  // cuarto -> momento en que el jefe cerró su hallazgo
+let campana = 0;             // momento del último hallazgo nuevo
+const flujo = new Map();     // llamada -> { de, pc, a, at, impresa }  (lo que va de un robot a otro)
 let jefeVa = null, jefeDesde = 0, jefeAntes = null;   // cuarto al que fue el jefe (y de dónde venía)
 
 const key = (r, pc) => `${r}|${pc}`;
@@ -200,8 +214,20 @@ function areaDe(robotId, texto) {
   const a = meta(robotId).areas; if (!a) return null;
   return (texto && a.find(x => x.tipos.test(String(texto)))) || a.find(x => x.defecto) || null;
 }
-function contarEvento(ev) {
+function contarEvento(ev, enVivo = false) {
   if (ev.tipo === 'ok') { const k = key(ev.robot, ev.pc); if (!ultimoOk.get(k) || ev.created_at > ultimoOk.get(k)) ultimoOk.set(k, ev.created_at); }
+  if (ev.tipo === 'ok' && ev.llamada) {
+    const L = String(ev.llamada).toUpperCase();
+    FLUJOS.forEach(f => {
+      if (ev.robot === f.de && f.cuando.test(ev.mensaje || '')) {
+        if (!flujo.has(L)) flujo.set(L, { de: f.de, pc: ev.pc, a: f.a, at: ev.created_at, impresa: false, etiqueta: f.etiqueta });
+        if (enVivo) mandarMensajero(key(ev.robot, ev.pc), f.a, L, meta(f.de).color);
+      }
+      if (ev.robot === f.a && flujo.get(L)?.de === f.de) flujo.get(L).impresa = true;
+    });
+  }
+  if (enVivo && ev.tipo === 'ok' && !ev._soloFlujo && meta(ev.robot).sala === 'correo') lanzarAvion(key(ev.robot, ev.pc), areaDe(ev.robot, ev.mensaje));
+  if (ev._soloFlujo) return;
   const ar = areaDe(ev.robot, ev.mensaje); if (!ar) return;
   const k = `${ev.robot}|${ev.pc}|${ar.id}`;
   const x = areaStats.get(k) || { ok: 0, err: 0, reint: 0, ultimo: null };
@@ -362,6 +388,7 @@ function robot(x, y, col, { pose = 'pie', carga = null, t = 0, est = 'esperando'
     px(x - 6, by + 3, 2, 4, '#9ca3af'); px(x + 6, by + 3, 2, 4, '#9ca3af');
     if (carga === 'papel') { px(x - 4, by + 5, 10, 6, '#f9fafb'); px(x - 3, by + 7, 7, 1, '#9ca3af'); px(x - 3, by + 9, 5, 1, '#9ca3af'); }
     if (carga === 'tarjeta') { px(x - 3, by + 5, 8, 5, '#fde68a'); px(x - 2, by + 6, 5, 1, '#b45309'); }
+    if (carga === 'caja') { px(x - 4, by + 4, 10, 8, '#b45309'); px(x - 4, by + 4, 10, 1, '#d97706'); px(x, by + 4, 2, 8, '#fde68a'); }
     if (carga === 'sobre') { px(x - 4, by + 5, 10, 6, '#f9fafb'); px(x - 4, by + 5, 10, 1, '#f472b6'); px(x, by + 7, 2, 1, '#f472b6'); }
   } else {
     const b = pose === 'camina' ? (paso ? 1 : -1) : 0;
@@ -369,10 +396,10 @@ function robot(x, y, col, { pose = 'pie', carga = null, t = 0, est = 'esperando'
   }
 }
 const corto = v => { const t = String(v); return t.length > 13 ? '…' + t.slice(-12) : t; };
-function globo(x, y, txt, bg = '#fff', fg = '#111') {
+function globo(x, y, txt, bg = '#fff', fg = '#111', limitar = true) {
   ctx.font = '5px "Press Start 2P", monospace';
   const w = Math.ceil(ctx.measureText(txt).width) + 6;
-  const bx = Math.max(5, Math.min(RW - 5 - w, Math.round(x - w / 2)));
+  const bx = limitar ? Math.max(5, Math.min(RW - 5 - w, Math.round(x - w / 2))) : Math.round(x - w / 2);
   px(bx, y - 8, w, 9, bg); px(bx, y - 8, w, 1, 'rgba(255,255,255,.4)'); px(Math.round(x), y + 1, 2, 2, bg);
   ctx.fillStyle = fg; ctx.fillText(txt, bx + 3, y - 1);
 }
@@ -394,6 +421,69 @@ function ruta(t, inicio, pasos) {
     tt -= p.ms; if (p.ir) pos = p.ir;
   }
   return { x: pos[0], y: pos[1], accion: 'pie', f: 0 };
+}
+
+/* ---------- Interacciones ---------- */
+/* Camino entre dos cuartos pasando por los corredores (puertas laterales a y=84, verticales por el centro) */
+function caminoEntre(ka, kb) {
+  const A = cuartos.get(ka), B = cuartos.get(kb); if (!A || !B) return null;
+  const vecinos = q => [...cuartos.values()].filter(o => (o.r === q.r && Math.abs(o.c - q.c) === 1) || (o.c === q.c && Math.abs(o.r - q.r) === 1));
+  const prev = new Map([[A.k, null]]), cola = [A];
+  while (cola.length) { const q = cola.shift(); if (q.k === B.k) break; vecinos(q).forEach(v => { if (!prev.has(v.k)) { prev.set(v.k, q); cola.push(v); } }); }
+  if (!prev.has(B.k)) return null;
+  const sec = []; for (let q = B; q; q = prev.get(q.k)) sec.unshift(q);
+  const pts = [[A.x + RW / 2, A.y + 92]];
+  for (let i = 0; i < sec.length - 1; i++) {
+    const a = sec[i], b = sec[i + 1];
+    if (a.r === b.r) { const y = a.y + 84, d = b.c > a.c ? 1 : -1, xa = d > 0 ? a.x + RW : a.x, xb = d > 0 ? b.x : b.x + RW;
+      pts.push([a.x + RW / 2, y], [xa - d * 6, y], [xb + d * 6, y]); }
+    else { const x = a.x + RW / 2, d = b.r > a.r ? 1 : -1;
+      if (d > 0) pts.push([x, a.y + RH - 6], [x, b.y + 4], [x, b.y + 34]); else pts.push([x, a.y + 34], [x, a.y + 4], [x, b.y + RH - 6]); }
+  }
+  pts.push([B.x + RW / 2, B.y + 92]);
+  return pts;
+}
+function mandarMensajero(kOrigen, robotDestino, llamada, color) {
+  const kd = [...cuartos.keys()].find(k => k.startsWith(robotDestino + '|')); if (!kd || !cuartos.has(kOrigen)) return;
+  const ruta = caminoEntre(kOrigen, kd); if (!ruta) return;
+  let largo = 0; for (let i = 1; i < ruta.length; i++) largo += Math.hypot(ruta[i][0] - ruta[i - 1][0], ruta[i][1] - ruta[i - 1][1]);
+  viajes.push({ ruta, largo, t0: performance.now(), dur: Math.max(3500, largo / 55 * 1000), llamada, color });
+}
+function lanzarAvion(k, area) {
+  const q = cuartos.get(k); if (!q) return;
+  const m = meta(k.split('|')[0]), n = m.areas?.length || 1, i = area ? m.areas.indexOf(area) : 0;
+  aviones.push({ x: q.x + Math.round(RW * (i + 1) / (n + 1)) + 12, y: q.y + 46, t0: performance.now(), color: area?.color || m.color });
+}
+function dibujarInteracciones(t) {
+  const ahora = performance.now();
+  for (let i = viajes.length - 1; i >= 0; i--) {
+    const v = viajes[i], p = (ahora - v.t0) / v.dur;
+    if (p >= 1) { viajes.splice(i, 1); continue; }
+    let d = p * v.largo, j = 1;
+    while (j < v.ruta.length - 1 && d > Math.hypot(v.ruta[j][0] - v.ruta[j - 1][0], v.ruta[j][1] - v.ruta[j - 1][1])) { d -= Math.hypot(v.ruta[j][0] - v.ruta[j - 1][0], v.ruta[j][1] - v.ruta[j - 1][1]); j++; }
+    const [x0, y0] = v.ruta[j - 1], [x1, y1] = v.ruta[j], seg = Math.hypot(x1 - x0, y1 - y0) || 1, f = Math.min(1, d / seg);
+    const x = x0 + (x1 - x0) * f, y = y0 + (y1 - y0) * f - 14;
+    robot(x, y, v.color, { pose: 'camina', carga: 'caja', t, est: 'trabajando', mira: Math.sign(x1 - x0) || 1 });
+    globo(x + 1, y - 18, String(v.llamada).slice(-12), '#fde68a', '#111', false);
+  }
+  for (let i = aviones.length - 1; i >= 0; i--) {
+    const a = aviones[i], p = (ahora - a.t0) / 2600;
+    if (p >= 1) { aviones.splice(i, 1); continue; }
+    const x = a.x + p * 70, y = a.y - p * 60 + Math.sin(p * 9) * 4;
+    ctx.globalAlpha = 1 - p * p;
+    px(x, y, 7, 2, '#f9fafb'); px(x + 2, y - 2, 3, 2, '#e5e7eb'); px(x - 2, y + 2, 4, 1, a.color);
+    ctx.globalAlpha = 1;
+  }
+}
+function confeti(t0, t) {
+  const p = (performance.now() - t0) / 4000; if (p >= 1) return false;
+  const r = rnd(Math.floor(t0));
+  for (let i = 0; i < 26; i++) {
+    const x = 20 + r() * (RW - 40), y = 30 + ((r() * 60 + p * 140) % 80), c = ['#22c55e', '#facc15', '#38bdf8', '#f472b6'][i % 4];
+    ctx.globalAlpha = 1 - p; px(x + Math.sin(t / 200 + i) * 3, y, 2, 2, c);
+  }
+  ctx.globalAlpha = 1; globo(RW / 2, 54, '✓ RESUELTO', '#22c55e', '#052e16');
+  return true;
 }
 
 /* ---------- Muebles ---------- */
@@ -467,6 +557,11 @@ function salaLogistica(q, s, est, t, col) {
   // cajas listas (una por llamada OK hoy, máx. 6)
   const ok = Math.min(6, resumen.get(q.k)?.ok_hoy || 0);
   for (let i = 0; i < ok; i++) { const bx = 140 + (i % 3) * 11, by = 104 - Math.floor(i / 3) * 8; px(bx, by, 10, 8, '#b45309'); px(bx, by, 10, 1, '#d97706'); px(bx + 4, by, 2, 8, '#fde68a'); }
+  // bandeja de entrada: llamadas que Digitadores mandó a logística y Guías aún no imprime
+  const porImprimir = [...flujo.values()].filter(f => f.a === 'guias' && !f.impresa).length;
+  px(10, 96, 26, 3, '#5c4128'); px(12, 99, 2, 10, '#3f2a1a'); px(32, 99, 2, 10, '#3f2a1a');
+  for (let i = 0; i < Math.min(5, porImprimir); i++) px(13 + (i % 2) * 2, 90 - i * 3, 18, 3, i % 2 ? '#d97706' : '#b45309');
+  texto(porImprimir ? `${porImprimir} POR IMPRIMIR` : 'BANDEJA', 23, 116, 3, porImprimir ? '#fde68a' : '#6b6475', true);
   let r = { x: PC[0], y: PC[1], accion: 'pie', f: 0 };
   if (est === 'trabajando') r = ruta(t + q.fase, PC, [
     { hacer: 'teclear', ms: 1600 }, { ir: PA, ms: 900 }, { hacer: 'imprimirA', ms: 1000 },
@@ -616,6 +711,7 @@ function salaJefatura(q, s, est, t) {
     const pose = caido || est === 'durmiendo' ? 'dormido' : 'sentado';
     jefe(93, 58 + (est === 'trabajando' ? Math.floor(t / 400) % 2 : 0), t, { pose, est: caido ? 'esperando' : est });
     if (pose === 'dormido') zzz(100, 46, t, '196,181,253');
+    else if ([...festejos.values()].some(t0 => performance.now() - t0 < 4000)) globo(93, 40, '¡BIEN!', '#22c55e', '#052e16');
     else if (est === 'trabajando') globo(93, 40, 'REVISANDO');
   }
   px(58, 72, 68, 5, '#7c5a3a'); px(58, 72, 68, 1, '#a07a50'); px(58, 77, 68, 18, '#5c4128'); px(62, 80, 60, 1, '#4a3420');
@@ -639,6 +735,12 @@ function salaJefatura(q, s, est, t) {
   return null;
 }
 /* En el cuarto con problema: aviso del Jefe colgado en el muro */
+function campanaJefe(t) {
+  const p = (performance.now() - campana) / 3000; if (!campana || p >= 1) return;
+  const a = Math.sin(t / 60) * 3;
+  px(136 + a, 30, 2, 3, '#9ca3af'); px(132 + a, 33, 10, 8, '#facc15'); px(131 + a, 40, 12, 2, '#ca8a04'); px(136 + a, 42, 2, 2, '#78350f');
+  if (Math.floor(t / 150) % 2) texto('!', 148, 38, 5, '#ef4444');
+}
 function avisoDelJefe(q, t) {
   const hs = hallazgosDe(q.k); if (!hs.length) return;
   const alta = hs.some(h => h.severidad === 'alta'), c = alta ? '#ef4444' : '#f59e0b';
@@ -691,7 +793,8 @@ function dibujarCuarto(q, t) {
       px(gx + 2, gy + 3, 1, 2, '#111'); px(gx + 5, gy + 3, 1, 2, '#111'); ctx.globalAlpha = 1;
     }
   }
-  if (!m.global) avisoDelJefe(q, t);
+  if (!m.global) avisoDelJefe(q, t); else campanaJefe(t);
+  if (festejos.has(q.k) && !confeti(festejos.get(q.k), t)) festejos.delete(q.k);
   // capas de estado
   if (est === 'caido' || est === 'sindatos') { ctx.fillStyle = 'rgba(5,4,8,.55)'; ctx.fillRect(0, 0, RW, RH); }
   if (est === 'durmiendo') { ctx.fillStyle = 'rgba(20,10,60,.45)'; ctx.fillRect(0, 0, RW, RH); px(RW - 30, 30, 8, 8, '#e9d5ff'); px(RW - 27, 30, 6, 6, 'rgba(20,10,60,.9)'); }
@@ -709,8 +812,29 @@ function loop(t) {
   dibujarAntorchas(t);
   jefeVa = destinoJefe(t);
   cuartos.forEach(q => dibujarCuarto(q, t));
+  dibujarInteracciones(t);
   requestAnimationFrame(loop);
 }
+
+/* Mouse sobre un cuarto → lo último que hizo */
+const tip = document.getElementById('tip');
+cv.addEventListener('mousemove', e => {
+  const b = cv.getBoundingClientRect(), x = (e.clientX - b.left) / b.width * MW, y = (e.clientY - b.top) / b.height * MH;
+  const q = [...cuartos.values()].find(q => x >= q.x && x <= q.x + RW && y >= q.y && y <= q.y + RH);
+  if (!q) { tip.hidden = true; return; }
+  const [id, pc] = q.k.split('|'), m = meta(id), s = status.get(q.k), e2 = estadoEfectivo(s, id);
+  const evs = eventos.filter(ev => ev.robot === id && (pc === '—' || ev.pc === pc)).slice(0, 6);
+  const hs = m.global ? hallazgos : hallazgosDe(q.k);
+  const enCola = id === 'guias' ? [...flujo.entries()].filter(([, f]) => f.a === 'guias' && !f.impresa).map(([L]) => L) : [];
+  tip.innerHTML = `<b class="n" style="color:${m.color}">${esc(m.nombre)}</b><span class="meta">${ESTADOS[e2].txt} · ${hace(s?.last_seen)}</span>`
+    + (enCola.length ? `<div class="l"><b>Por imprimir:</b> ${esc(enCola.slice(0, 4).join(', '))}${enCola.length > 4 ? '…' : ''}</div>` : '')
+    + hs.slice(0, 3).map(h => `<div class="l"><span class="dot" style="background:${HALLAZGO_COLOR(h)}"></span>${esc(h.titulo)}</div>`).join('')
+    + (evs.length ? evs.map(ev => `<div class="l"><span class="meta">${hhmm(ev.created_at)}</span><span class="t-${ev.tipo}" style="color:${ev.tipo === 'ok' ? 'var(--ok)' : ev.tipo === 'error' ? 'var(--err)' : 'var(--wait)'}">${ev.tipo.toUpperCase()}</span>${esc(ev.llamada || '')} ${esc((ev.mensaje || '').slice(0, 40))}</div>`).join('') : '<span class="meta">Sin movimientos recientes</span>');
+  tip.hidden = false;
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.min(innerWidth - w - 8, e.clientX + 14) + 'px'; tip.style.top = Math.min(innerHeight - h - 8, e.clientY + 14) + 'px';
+});
+cv.addEventListener('mouseleave', () => { tip.hidden = true; });
 
 /* Clic en un cuarto → su tarjeta */
 cv.addEventListener('click', e => {
@@ -819,13 +943,18 @@ async function initSupabase() {
       sb.from('robot_status').select('*'),
       sb.from('robot_resumen_hoy').select('*'),
       sb.from('robot_eventos').select('*').order('created_at', { ascending: false }).limit(60),
-      sb.from('robot_eventos').select('robot, pc, tipo, mensaje, created_at').gte('created_at', inicioDiaGT()).limit(5000),
+      sb.from('robot_eventos').select('robot, pc, tipo, llamada, mensaje, created_at').gte('created_at', new Date(Date.now() - 2 * 86400000).toISOString()).order('created_at').limit(8000),
     ]);
     if (st.error) { document.getElementById('sub').textContent = 'Error leyendo Supabase: ' + st.error.message; return; }
     status.clear(); st.data.forEach(s => status.set(key(s.robot, s.pc), s));
     resumen.clear(); (rs.data || []).forEach(x => resumen.set(key(x.robot, x.pc), x));
     eventos = ev.data || [];
-    areaStats.clear(); ultimoOk.clear(); (hoy.data || []).filter(e => e.tipo === 'ok' || conAreas.includes(e.robot)).forEach(contarEvento);
+    areaStats.clear(); ultimoOk.clear(); flujo.clear();
+    const ini = inicioDiaGT();
+    (hoy.data || []).forEach(e => {
+      if (e.created_at >= ini && (e.tipo === 'ok' || conAreas.includes(e.robot))) contarEvento(e);
+      else if (e.tipo === 'ok' && e.llamada) contarEvento({ ...e, robot: e.robot, mensaje: e.mensaje, _soloFlujo: true });
+    });
     await cargarHallazgos();
     ultimaFirma = ''; quizasLayout(); renderCards(); renderLog();
   };
@@ -844,12 +973,16 @@ async function initSupabase() {
       status.set(key(s.robot, s.pc), s); quizasLayout(); renderCards();
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'robot_eventos' }, p => {
-      eventos.unshift(p.new); eventos = eventos.slice(0, 100); contarEvento(p.new);
+      eventos.unshift(p.new); eventos = eventos.slice(0, 100); contarEvento(p.new, true);
       if (p.new.tipo === 'ok') sonar('ok'); if (p.new.tipo === 'error') sonar('error');
       renderLog(); recargarResumen();
     })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'jefe_hallazgos' }, async p => {
-      if (p.eventType === 'INSERT' && p.new?.severidad === 'alta') sonar('error');
+      if (p.eventType === 'INSERT') { campana = performance.now(); if (p.new?.severidad === 'alta') sonar('error'); }
+      if (p.eventType === 'UPDATE' && p.new?.cerrado_en) {
+        const k = [...cuartos.keys()].find(k => k.startsWith((p.new.robot || '') + '|') && (!p.new.pc || k.endsWith('|' + p.new.pc)));
+        if (k) { festejos.set(k, performance.now()); sonar('prueba'); }
+      }
       await cargarHallazgos(); renderCards();
     })
     .subscribe();
@@ -881,15 +1014,23 @@ function initDemo() {
   let vuelta = 0;
   setInterval(() => {
     vuelta++;
+    const antes = hallazgos.map(h => h.robot);
     hallazgos = vuelta % 3 === 1 ? [{ clave: 'citas:atoradas', robot: 'citas', severidad: 'alta', titulo: '2 cita(s) lista(s) sin llamada hace más de 30 min', detalle: 'El robot de Citas no las está tomando: 412-1, 413-1', abierto_en: iso(Date.now() - 600000) },
                                         { clave: 'correos:atrasados', robot: 'correos', severidad: 'media', titulo: '1 correo(s) en cola hace más de 15 min', detalle: 'autoconsumo_solicitud AC120', abierto_en: iso(Date.now() - 300000) }]
               : vuelta % 3 === 2 ? [{ clave: 'correos:atrasados', robot: 'correos', severidad: 'media', titulo: '1 correo(s) en cola hace más de 15 min', detalle: 'autoconsumo_solicitud AC120', abierto_en: iso(Date.now() - 300000) }] : [];
+    antes.filter(r => !hallazgos.some(h => h.robot === r)).forEach(r => { const k = [...cuartos.keys()].find(k => k.startsWith(r + '|')); if (k) festejos.set(k, performance.now()); });
+    if (hallazgos.some(h => !antes.includes(h.robot))) campana = performance.now();
     Object.assign(status.get('jefe|HPCLPJCOTUC'), { estado: 'esperando', detalle: hallazgos.length ? `${hallazgos.length} hallazgo(s) abiertos` : 'Todo en orden', last_seen: iso(Date.now()) });
     base.filter(b => b.robot !== 'jefe').forEach(b => {
       const k = key(b.robot, b.pc), s = status.get(k), roll = Math.random();
       if (s.estado === 'trabajando' && roll < .5) {
         const ev = { robot: b.robot, pc: b.pc, tipo: 'ok', llamada: s.llamada, mensaje: b.robot === 'correos' ? s.detalle.replace('Enviando ', '') + ' → usuario@hpc.com.gt' : null, created_at: iso(Date.now()) };
-        eventos.unshift(ev); contarEvento(ev); resumen.get(k).ok_hoy++; sonar('ok');
+        if (b.robot === 'digitadores') ev.mensaje = `${ev.llamada}  DIGITADA  Reparacion+Tecnico · Correctivo · logística`;
+        eventos.unshift(ev); contarEvento(ev, true); resumen.get(k).ok_hoy++; sonar('ok');
+        if (b.robot === 'digitadores') setTimeout(() => {           // Guías la imprime unos segundos después
+          const g = { robot: 'guias', pc: 'HPCPCLOGISTICA', tipo: 'ok', llamada: ev.llamada, mensaje: `OK ${ev.llamada} guía → TSC`, created_at: iso(Date.now()) };
+          eventos.unshift(g); contarEvento(g, true); resumen.get('guias|HPCPCLOGISTICA').ok_hoy++; renderLog();
+        }, 14000);
       }
       if (roll < .15) Object.assign(s, { estado: 'esperando', llamada: null, detalle: 'Sin pendientes' });
       else if (roll < .18 && b.robot === 'guias') Object.assign(s, { estado: 'error', ultimo_error: 'No apareció el botón Imprimir en el visor' });
