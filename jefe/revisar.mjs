@@ -59,7 +59,7 @@ async function q(db, path, { method = 'GET', body, prefer } = {}) {
 // h = { clave, robot, pc?, centro?, severidad: 'alta'|'media', titulo, detalle }
 
 async function revisarRobots() {
-  const filas = await q(KK, 'robot_status?select=robot,pc,centro,estado,detalle,ultimo_error,intervalo_seg,last_seen')
+  const filas = await q(KK, 'robot_status?select=*')
   const out = []
   for (const s of filas.filter((f) => f.robot !== 'jefe')) {
     const n = NOMBRES[s.robot] || s.robot
