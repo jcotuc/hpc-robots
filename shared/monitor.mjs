@@ -3,11 +3,13 @@
 // .env, modo A: MONITOR_SUPABASE_URL / MONITOR_SUPABASE_KEY = service_role (si faltan usa SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)
 //       modo B (PC sin service_role): MONITOR_SUPABASE_URL, MONITOR_SUPABASE_KEY = anon key, MONITOR_TOKEN = token del robot
 //       ROBOT_PC (opcional, nombre a mostrar) · MONITOR_APAGADO=1 para no reportar
+//       ROBOT_CENTRO (opcional, ej. Nodus): centro de servicio. Requiere monitor/03_centros.sql
 import os from 'node:os'
 
 const URL_ = (process.env.MONITOR_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '')
 const KEY = process.env.MONITOR_SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
 const TOKEN = (process.env.MONITOR_TOKEN || '').trim()
+const CENTRO = (process.env.ROBOT_CENTRO || '').trim()
 const PC = (process.env.ROBOT_PC || os.hostname()).trim().toUpperCase()
 const LLAMADA_RE = /\bLL[A-Z]?\d+-\d+\b/i
 const corto = (x) => String(x?.message || x || '').split('\n')[0].slice(0, 500)
@@ -43,10 +45,11 @@ export function crearMonitor(robot, { intervaloSeg = 180, activo = true } = {}) 
   const estado = (est, detalle = null, llamada = null, err) => {
     const body = { robot, pc: PC, estado: est, detalle: detalle ? corto(detalle) : null, llamada, intervalo_seg: intervaloSeg }
     if (err !== undefined) body.ultimo_error = corto(err)
+    if (CENTRO) body.centro = CENTRO
     enviar('estado', body)
   }
   const evento = (tipo, llamada = null, mensaje = null) =>
-    enviar('evento', { robot, pc: PC, tipo, llamada, mensaje: mensaje ? corto(mensaje) : null })
+    enviar('evento', { robot, pc: PC, tipo, llamada, mensaje: mensaje ? corto(mensaje) : null, ...(CENTRO ? { centro: CENTRO } : {}) })
 
   const trabajando = (llamada = null, detalle = 'Procesando') => estado('trabajando', detalle, llamada)
   const ok = (llamada = null, mensaje = null) => evento('ok', llamada, mensaje)

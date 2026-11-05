@@ -25,7 +25,16 @@ button:hover{border-color:var(--gold)}
 button.on{border-color:var(--ok);color:var(--ok)}
 .demo{font-family:"Press Start 2P",monospace;font-size:9px;color:#111;background:var(--gold);padding:6px 8px}
 main{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:12px}
-.mapa{background:#07060a;border:2px solid var(--line);line-height:0;display:flex;align-items:center;justify-content:center;min-height:0;min-width:0}
+.izq{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
+.mapa{background:#07060a;border:2px solid var(--line);line-height:0;display:flex;align-items:center;justify-content:center;min-height:0;min-width:0;flex:1}
+.niveles{display:flex;flex-wrap:wrap;gap:6px}
+.nivel{display:flex;align-items:center;gap:6px;font-size:9px;padding:6px 8px}
+.nivel.activo{border-color:var(--gold);color:var(--gold)}
+.nivel.vacio{opacity:.4;cursor:default}
+.nivel.vacio:hover{border-color:var(--line)}
+.luces{display:flex;gap:2px}
+.luces i{width:6px;height:6px;display:block}
+.centro-tag{font-size:11px;color:var(--muted)}
 #mapa{display:block;image-rendering:pixelated;image-rendering:crisp-edges;cursor:pointer}
 .lateral{display:flex;flex-direction:column;gap:12px;min-height:0}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;align-content:start}
@@ -82,7 +91,10 @@ aside h2{font-family:"Press Start 2P",monospace;font-size:10px;margin:0;padding:
   </div>
 </header>
 <main>
-  <div class="mapa" id="mapaBox"><canvas id="mapa" aria-label="Mapa del dungeon con un cuarto por robot"></canvas></div>
+  <div class="izq">
+    <nav class="niveles" id="niveles" aria-label="Centros de servicio"></nav>
+    <div class="mapa" id="mapaBox"><canvas id="mapa" aria-label="Mapa del dungeon con un cuarto por robot"></canvas></div>
+  </div>
   <div class="lateral">
     <div class="cards" id="cards"></div>
     <aside><h2>BITÁCORA EN VIVO</h2><div id="log"><div class="empty">Sin eventos todavía</div></div></aside>
@@ -101,16 +113,25 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
    sala    = qué escena se dibuja: 'logistica' | 'digitacion' | 'recepcion' | 'correo' | (otra = escritorio genérico)
    areas   = puestos dentro del cuarto. Se reconocen por texto en lo que reporta el robot (tipos);
              el que tenga defecto:true recibe lo que no coincida con ninguno.                                   */
+/* Centros de servicio = niveles del dungeon. id = lo que el robot reporta en ROBOT_CENTRO (o el centro por defecto del robot) */
+const CENTROS = [
+  { id: 'Nodus', nombre: 'Nodus · Z6' }, { id: 'Zona 4', nombre: 'Zona 4' }, { id: 'Zona 5', nombre: 'Zona 5' },
+  { id: 'Chimaltenango', nombre: 'Chimaltenango' }, { id: 'Quiché', nombre: 'Quiché' }, { id: 'Escuintla', nombre: 'Escuintla' },
+  { id: 'Río Hondo', nombre: 'Río Hondo' }, { id: 'Xela', nombre: 'Xela' }, { id: 'Cobán', nombre: 'Cobán' },
+  { id: 'Huehuetenango', nombre: 'Huehuetenango' }, { id: 'Mazatenango', nombre: 'Mazatenango' }, { id: 'Petén', nombre: 'Petén' },
+  { id: 'Jutiapa', nombre: 'Jutiapa' }, { id: 'El Rancho', nombre: 'El Rancho' }, { id: 'Morales', nombre: 'Morales' },
+];
+const COMUN = 'Común';   // robots que atienden a todos los centros (ej. Correos)
 const LS = [1, 2, 3, 4, 5, 6]; // lunes a sábado
 const ROBOTS = [
-  { id: 'citas',       nombre: 'Citas',       sala: 'recepcion',  color: '#f5c542', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
-  { id: 'guias',       nombre: 'Guías',       sala: 'logistica',  color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
-  { id: 'digitadores', nombre: 'Digitadores', sala: 'digitacion', color: '#2dd4bf', horario: { dias: LS, desde: '07:00', hasta: '18:00' },
+  { id: 'citas',       nombre: 'Citas',       sala: 'recepcion',  centro: 'Zona 4', color: '#f5c542', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
+  { id: 'guias',       nombre: 'Guías',       sala: 'logistica',  centro: 'Nodus',  color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
+  { id: 'digitadores', nombre: 'Digitadores', sala: 'digitacion', centro: 'Nodus',  color: '#2dd4bf', horario: { dias: LS, desde: '07:00', hasta: '18:00' },
     /* Un puesto por estado de llamada. Para agregar otro: { id, nombre, rotulo, color, tipos: /texto/i } */
     areas: [
       { id: 'garantia', nombre: 'Garantía', rotulo: 'GARANTIA', color: '#2dd4bf', tipos: /garant/i, defecto: true },
     ] },
-  { id: 'correos',     nombre: 'Correos',     sala: 'correo',     color: '#f472b6', horario: { dias: LS, desde: '07:00', hasta: '20:00' },
+  { id: 'correos',     nombre: 'Correos',     sala: 'correo',     centro: COMUN,    color: '#f472b6', horario: { dias: LS, desde: '07:00', hasta: '20:00' },
     /* Departamentos: se reconocen por el tipo de correo (correos_cola.tipo) */
     areas: [
       { id: 'autoconsumos', nombre: 'Autoconsumos',   rotulo: 'AUTOCONSUMOS', color: '#fbbf24', tipos: /\bautoconsumo/ },
@@ -200,11 +221,39 @@ function texto(t, x, y, size, color, centro = false) {
 }
 function rnd(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
 
-function allKeys() {
+/* Centro de un cuarto: el que reporta el robot (ROBOT_CENTRO) o el de su config */
+const centroDe = k => status.get(k)?.centro || meta(k.split('|')[0]).centro || COMUN;
+let nivel = 'todos';
+try { nivel = new URLSearchParams(location.search).get('centro') || localStorage.getItem('dungeon-nivel') || 'todos'; } catch {}
+function todasLasKeys() {
   const ks = new Set([...status.keys()].filter(k => ROBOTS.some(r => r.id === k.split('|')[0])));
   ROBOTS.forEach(r => { if (![...ks].some(k => k.startsWith(r.id + '|'))) ks.add(key(r.id, '—')); });
   const orden = id => ROBOTS.findIndex(r => r.id === id);
   return [...ks].sort((a, b) => orden(a.split('|')[0]) - orden(b.split('|')[0]) || a.localeCompare(b));
+}
+function allKeys() {
+  const ks = todasLasKeys();
+  if (nivel === 'todos' || !ks.some(k => centroDe(k) === nivel)) return ks;
+  return ks.filter(k => centroDe(k) === nivel);
+}
+function elegirNivel(n) {
+  nivel = n; try { localStorage.setItem('dungeon-nivel', n); } catch {}
+  ultimaFirma = ''; quizasLayout(); renderCards(); renderLog();
+}
+function renderNiveles() {
+  const ks = todasLasKeys(), por = {};
+  ks.forEach(k => (por[centroDe(k)] ||= []).push(estadoEfectivo(status.get(k), k.split('|')[0])));
+  const luces = l => `<span class="luces">${(l || []).map(e => `<i style="background:${ESTADOS[e].c}"></i>`).join('')}</span>`;
+  const chip = (id, nombre, l) => l?.length
+    ? `<button class="nivel ${nivel === id ? 'activo' : ''}" data-n="${esc(id)}">${esc(nombre)} ${luces(l)}</button>`
+    : `<button class="nivel vacio" disabled title="Sin robots todavía">${esc(nombre)}</button>`;
+  const todos = Object.values(por).flat();
+  const nav = document.getElementById('niveles');
+  nav.innerHTML = chip('todos', 'TODOS', todos)
+    + CENTROS.map(c => chip(c.id, c.nombre, por[c.id])).join('')
+    + (por[COMUN] ? chip(COMUN, COMUN.toUpperCase(), por[COMUN]) : '')
+    + Object.keys(por).filter(c => c !== COMUN && !CENTROS.some(x => x.id === c)).map(c => chip(c, c, por[c])).join('');
+  nav.querySelectorAll('button[data-n]').forEach(b => b.onclick = () => elegirNivel(b.dataset.n));
 }
 
 function layout() {
@@ -523,7 +572,8 @@ function dibujarCuarto(q, t) {
   const [id] = q.k.split('|'), m = meta(id), s = status.get(q.k);
   const est = estadoEfectivo(s, id), dim = !['trabajando', 'esperando', 'error'].includes(est);
   ctx.save(); ctx.translate(q.x, q.y); ctx.beginPath(); ctx.rect(0, 0, RW, RH); ctx.clip();
-  cuartoBase(q, m.nombre.toUpperCase(), m.color, dim, t);
+  const cen = centroDe(q.k);
+  cuartoBase(q, (nivel === 'todos' && cen !== COMUN ? `${m.nombre} · ${cen}` : m.nombre).toUpperCase(), m.color, dim, t);
   let r;
   if (m.sala === 'logistica') r = salaLogistica(q, s, est, t, m.color);
   else if (m.sala === 'digitacion') r = salaDigitacion(q, s, est, t, m.color, m.areas || [{ id: 'gen', rotulo: m.nombre.toUpperCase(), color: m.color, tipos: /./ }]);
@@ -583,6 +633,7 @@ cv.addEventListener('click', e => {
 const prevEst = new Map();
 function renderCards() {
   const cont = document.getElementById('cards');
+  renderNiveles();
   const cnt = { trabajando: 0, esperando: 0, error: 0, caido: 0, sindatos: 0, durmiendo: 0 };
   cont.innerHTML = [...cuartos.keys()].map(k => {
     const [id, pc] = k.split('|'), s = status.get(k), e = estadoEfectivo(s, id); cnt[e]++;
@@ -594,7 +645,7 @@ function renderCards() {
       : (s?.detalle || '') + (s?.llamada ? (m.sala === 'correo' ? ' · Ref. ' : ' · Llamada ') + s.llamada : '');
     return `<article class="card ${e}" data-k="${esc(k)}">
       <div class="row"><span class="name" style="color:${m.color}">${esc(m.nombre)}</span><span class="badge" style="background:${ESTADOS[e].c}">${ESTADOS[e].txt}</span></div>
-      <div class="row meta"><span>PC: ${esc(pc)}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
+      <div class="row meta"><span>${esc(centroDe(k))} · PC: ${esc(pc)}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
       <div class="det" title="${esc(det)}">${esc(det)}</div>
       ${s?.ultimo_error ? `<div class="err-txt" title="${esc(s.ultimo_error)}">Último error: ${esc(s.ultimo_error)}</div>` : ''}
       <div class="stats"><span>Hoy OK <b style="color:var(--ok)">${rs.ok_hoy}</b></span><span>Errores <b style="color:var(--err)">${rs.errores_hoy}</b></span></div>
@@ -614,7 +665,10 @@ function renderCards() {
 function renderLog() {
   const log = document.getElementById('log');
   if (!eventos.length) { log.innerHTML = '<div class="empty">Sin eventos todavía</div>'; return; }
-  log.innerHTML = eventos.slice(0, 60).map(ev => {
+  const visibles = new Set(allKeys().map(k => k.split('|')[0] + '|' + k.split('|')[1]));
+  const evs = nivel === 'todos' ? eventos : eventos.filter(ev => visibles.has(key(ev.robot, ev.pc)));
+  if (!evs.length) { log.innerHTML = '<div class="empty">Sin eventos en este nivel</div>'; return; }
+  log.innerHTML = evs.slice(0, 60).map(ev => {
     const a = meta(ev.robot).areas && areaDe(ev.robot, ev.mensaje);
     return `<div class="ev"><time>${hhmm(ev.created_at)}</time>
       <div><span class="t-${ev.tipo}">${ev.tipo.toUpperCase()}</span> <b>${esc(meta(ev.robot).nombre)}</b>${a && meta(ev.robot).areas.length > 1 ? `<span class="tag" style="background:${a.color}">${esc(a.nombre)}</span>` : ''}
