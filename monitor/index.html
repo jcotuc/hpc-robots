@@ -121,17 +121,18 @@ const CENTROS = [
   { id: 'Huehuetenango', nombre: 'Huehuetenango' }, { id: 'Mazatenango', nombre: 'Mazatenango' }, { id: 'Petén', nombre: 'Petén' },
   { id: 'Jutiapa', nombre: 'Jutiapa' }, { id: 'El Rancho', nombre: 'El Rancho' }, { id: 'Morales', nombre: 'Morales' },
 ];
-const COMUN = 'Común';   // robots que atienden a todos los centros (ej. Correos)
+const COMUN = 'Común';   // robots que atienden a todos los centros (hoy ninguno)
 const LS = [1, 2, 3, 4, 5, 6]; // lunes a sábado
 const ROBOTS = [
   { id: 'citas',       nombre: 'Citas',       sala: 'recepcion',  centro: 'Zona 4', color: '#f5c542', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
+  /* Guías puede correr en varios centros: cada PC pone ROBOT_CENTRO en su .env (ver monitor/03_centros.sql); sin eso = Nodus */
   { id: 'guias',       nombre: 'Guías',       sala: 'logistica',  centro: 'Nodus',  color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
   { id: 'digitadores', nombre: 'Digitadores', sala: 'digitacion', centro: 'Nodus',  color: '#2dd4bf', horario: { dias: LS, desde: '07:00', hasta: '18:00' },
     /* Un puesto por estado de llamada. Para agregar otro: { id, nombre, rotulo, color, tipos: /texto/i } */
     areas: [
       { id: 'garantia', nombre: 'Garantía', rotulo: 'GARANTIA', color: '#2dd4bf', tipos: /garant/i, defecto: true },
     ] },
-  { id: 'correos',     nombre: 'Correos',     sala: 'correo',     centro: COMUN,    color: '#f472b6', horario: { dias: LS, desde: '07:00', hasta: '20:00' },
+  { id: 'correos',     nombre: 'Correos',     sala: 'correo',     centro: 'Nodus',  color: '#f472b6', horario: { dias: LS, desde: '07:00', hasta: '20:00' },
     /* Departamentos: se reconocen por el tipo de correo (correos_cola.tipo) */
     areas: [
       { id: 'autoconsumos', nombre: 'Autoconsumos',   rotulo: 'AUTOCONSUMOS', color: '#fbbf24', tipos: /\bautoconsumo/ },
