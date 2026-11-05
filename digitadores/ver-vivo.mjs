@@ -39,15 +39,21 @@ let ultima = null // hora (ms) de la última corrida vista
 let avisado = false
 
 function totales(lineas) {
-  const ok = lineas.filter((l) => /\sDIGITADA\s/.test(l) && !/YA DIGITADA/.test(l)).length
-  const ya = lineas.filter((l) => /YA DIGITADA/.test(l)).length
-  const pend = lineas.filter((l) => /\sPENDIENTE\s/.test(l)).length
-  const err = lineas.filter((l) => /\sERROR\s|corrida ERROR/.test(l)).length
+  // Estado ACTUAL de cada llamada = su última línea del día (una llamada que quedó pendiente y luego
+  // se digitó cuenta solo como digitada)
+  const ultimo = new Map()
+  for (const l of lineas) {
+    const m = l.match(/^\S+\s+(LL[SM]\d+-\d+)\s+(YA DIGITADA|DIGITADA|PENDIENTE|ERROR)\s/)
+    if (m) ultimo.set(m[1], m[2])
+  }
+  const cuenta = (e) => [...ultimo.values()].filter((v) => v === e).length
+  const ok = cuenta('DIGITADA'), ya = cuenta('YA DIGITADA'), pend = cuenta('PENDIENTE'), err = cuenta('ERROR')
   const corridas = lineas.filter((l) => /--- corrida/.test(l))
   const primera = corridas[0] ? hora(corridas[0]) : '--'
   const ult = corridas.at(-1) ? hora(corridas.at(-1)) : '--'
   const color = err ? C.rojo : pend ? C.amarillo : C.cian
-  return `${color}  Hoy: ${ok} digitada(s) · ${ya} ya digitada(s) · ${pend} pendiente(s) · ${err} error(es) · ${corridas.length} corrida(s) · primera ${primera} · última ${ult}${C.fin}`
+  const pendientes = [...ultimo].filter(([, v]) => v === 'PENDIENTE').map(([n]) => n)
+  return `${color}  Hoy: ${ok} digitada(s) · ${ya} ya digitada(s) · ${pend} pendiente(s) ahora${pendientes.length ? ` (${pendientes.join(', ')})` : ''} · ${err} con error · ${corridas.length} corrida(s) · primera ${primera} · última ${ult}${C.fin}`
 }
 
 function encabezado() {

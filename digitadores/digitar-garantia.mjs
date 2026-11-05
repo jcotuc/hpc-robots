@@ -646,6 +646,28 @@ async function procesar(page, a) {
     resumen(`${numero}  YA DIGITADA  CSHP en ${st || 'cerrada'}`)
     return 'ya'
   }
+  // LLM que también van a Logística - Envío: cliente CEMACO (incluye CONSTRUCEMACO) Y comentario con código OPE-.
+  // Se exigen las DOS señales; si solo aparece una, se queda en Facturación y se avisa en el log.
+  let pasaLogistica = esLLS
+  if (!esLLS) {
+    const cliente = await page.locator('#FrmLLamadasServ_TxtNombre').inputValue({ timeout: 3_000 }).catch(() => '')
+    const comentario = await page.locator('#FrmLLamadasServ_TxtComentario').inputValue({ timeout: 3_000 }).catch(() => '')
+    const cemaco = /CEMACO/i.test(cliente)
+    const ope = /\bOPE-\d/i.test(comentario)
+    // Caso 2: Guía de Recepción = "ENVIO" (también "ENVÍO", "ENVIO DIRECTO")
+    const guiaRecep = (await page.locator('#FrmLLamadasServ_TxtGuiaRecep').inputValue({ timeout: 3_000 }).catch(() => '')).trim()
+    const envio = /^ENV[IÍ]O\b/i.test(guiaRecep)
+    if (envio) {
+      pasaLogistica = true
+      log(`   ↳ Guía de recepción "${guiaRecep}": después de facturar pasa a Logística - Envío`)
+    } else if (cemaco && ope) {
+      pasaLogistica = true
+      log(`   ↳ ${cliente} con ${comentario.match(/OPE-[\d._]+/i)?.[0]}: después de facturar pasa a Logística - Envío`)
+    } else if (cemaco || ope) {
+      log(`   ⚠️ Solo una señal de Cemaco (cliente "${cliente}", OPE ${ope ? 'sí' : 'no'}): se queda en Facturación`)
+    }
+  }
+
   await escribirResolucion(page, d)
   if (d.skuNuevo) anotar(destino, 'sku', { antes: d.skuAntes, despues: d.skuNuevo })
   anotar(destino, 'resolucion', { tipologia: d.tipologiaCSHP })
@@ -659,7 +681,7 @@ async function procesar(page, a) {
   anotar(destino, 'facturar', { aviso })
   log(`   ↳ Facturada${aviso ? ` (aviso: ${aviso})` : ''}`)
 
-  if (esLLS) {
+  if (pasaLogistica) {
     await abrirLlamada(page, destino)
     const st2 = await cambiarStatus(page, ST_LOGISTICA)
     anotar(destino, 'logistica', { status: st2 })
@@ -668,7 +690,7 @@ async function procesar(page, a) {
 
   await marcarDigitada(a)
   anotar(destino, 'digitada', { estado: 'completa' })
-  resumen(`${numero}  DIGITADA  ${d.tecnico} · ${d.tipologia}${esLLS ? ' · logística' : ''}`)
+  resumen(`${numero}  DIGITADA  ${d.tecnico} · ${d.tipologia}${pasaLogistica ? (esLLS ? ' · logística' : ' · logística (LLM)') : ''}`)
   return 'digitada'
 }
 
