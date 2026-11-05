@@ -85,7 +85,7 @@ const LS = [1, 2, 3, 4, 5, 6]; // lunes a sábado
 const ROBOTS = [
   { id: 'citas',       nombre: 'Citas',       color: '#f5c542', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
   { id: 'guias',       nombre: 'Guías',       color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
-  { id: 'mimo',        nombre: 'MiMo',        color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
+  // { id: 'mimo',     nombre: 'MiMo',        color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
   { id: 'digitadores', nombre: 'Digitadores', color: '#2dd4bf', horario: { dias: LS, desde: '07:00', hasta: '18:00' } },
   { id: 'correos',     nombre: 'Correos',     color: '#f472b6', horario: { dias: LS, desde: '07:00', hasta: '20:00' },
     /* Departamentos dentro del cuarto: se reconocen por el tipo de correo (correos_cola.tipo) */
@@ -466,7 +466,6 @@ function initDemo() {
   const base = [
     { robot: 'citas',       pc: 'HPC-CS-ROBOT01', estado: 'trabajando', llamada: '2611040123', detalle: 'Creando llamada', intervalo_seg: 300 },
     { robot: 'guias',       pc: 'HPC-CS-ROBOT01', estado: 'esperando',  detalle: 'Sin pendientes',  intervalo_seg: 180 },
-    { robot: 'mimo',        pc: 'HPC-MOSTRADOR',  estado: 'esperando',  detalle: 'Sin pendientes', intervalo_seg: 300, last: now - 26 * 60000 },
     { robot: 'digitadores', pc: 'HPC-CS-ROBOT02', estado: 'error', llamada: '2611040099', detalle: 'Error', intervalo_seg: 180,
       ultimo_error: 'Timeout 30000ms esperando #btnAceptar' },
     { robot: 'correos',     pc: 'HPC-CS-ROBOT02', estado: 'trabajando', llamada: '89DC279B', detalle: 'Enviando autoconsumo_solicitud', intervalo_seg: 120 },
