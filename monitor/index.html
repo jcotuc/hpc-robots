@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
@@ -40,11 +40,6 @@ canvas{display:block;width:100%;image-rendering:pixelated;image-rendering:crisp-
 .err-txt{font-size:11px;color:var(--err);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .stats{display:flex;gap:12px;font-size:12px}
 .stats b{font-family:"Press Start 2P",monospace;font-size:10px}
-.deptos{display:grid;gap:4px;border-top:1px solid var(--line);padding-top:6px}
-.depto{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:12px}
-.depto b{font-weight:600}
-.depto .meta{margin-left:auto}
-.tag{font-family:"Press Start 2P",monospace;font-size:7px;padding:2px 4px;color:#111;margin-left:4px}
 aside{background:var(--panel);border:2px solid var(--line);display:flex;flex-direction:column;max-height:calc(100vh - 120px);position:sticky;top:16px}
 aside h2{font-family:"Press Start 2P",monospace;font-size:10px;margin:0;padding:12px;border-bottom:2px solid var(--line);color:var(--gold)}
 #log{overflow:auto;padding:8px 12px;display:grid;gap:6px;font-size:12px}
@@ -77,41 +72,18 @@ aside h2{font-family:"Press Start 2P",monospace;font-size:10px;margin:0;padding:
 /* ================== CONFIG ==================
    Deja vacío para MODO DEMO. Usa la ANON key (solo lectura por RLS). */
 const SUPABASE_URL = 'https://kkzovradqpptmsaakqlb.supabase.co'; // proyecto de citas / MiMo
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtrem92cmFkcXBwdG1zYWFrcWxiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4NDEyMjMsImV4cCI6MjA5ODQxNzIyM30.-An3ySZYgSErKSTvfrui6BKrbEUcp-BgmloR7QsaRN4'; // Supabase → Project Settings → API → anon public
+const SUPABASE_ANON_KEY = ''; // Supabase → Project Settings → API → anon public
 
 /* Robots esperados: si uno nunca reporta, aparece "SIN DATOS". id = el que usa Monitor("id") */
 /* horario = el de su tarea programada (programar-tarea.cmd), hora Guatemala. Fuera de horario = DURMIENDO, no CAÍDO */
 const LS = [1, 2, 3, 4, 5, 6]; // lunes a sábado
 const ROBOTS = [
   { id: 'citas',       nombre: 'Citas',       color: '#f5c542', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
-  { id: 'guias',       nombre: 'Guías',       color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
-  // { id: 'mimo',     nombre: 'MiMo',        color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
+  { id: 'guias',       nombre: 'Guías',       color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '18:00' } },
+  { id: 'mimo',        nombre: 'MiMo',        color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
   { id: 'digitadores', nombre: 'Digitadores', color: '#2dd4bf', horario: { dias: LS, desde: '07:00', hasta: '18:00' } },
-  { id: 'correos',     nombre: 'Correos',     color: '#f472b6', horario: { dias: LS, desde: '07:00', hasta: '20:00' },
-    /* Departamentos dentro del cuarto: se reconocen por el tipo de correo (correos_cola.tipo) */
-    deptos: [
-      { id: 'autoconsumos', nombre: 'Autoconsumos',    rotulo: 'AUTOCONSUMOS', color: '#fbbf24', tipos: /^autoconsumo/ },
-      { id: 'garantias',    nombre: 'Garantías / NC',  rotulo: 'GARANTIA/NC',  color: '#38bdf8', tipos: /^(garantia|nc)/ },
-    ] },
   // { id: 'garantias', nombre: 'Garantías', color: '#c084fc', horario: { dias: LS, desde: '07:00', hasta: '18:00' } },
 ];
-/* Departamento de un texto del robot ("Enviando garantia_taller", "autoconsumo_solicitud → ...") */
-function deptoDe(robotId, texto) {
-  const d = meta(robotId).deptos; if (!d || !texto) return null;
-  const tipos = String(texto).match(/\b[a-z]+_[a-z_]+\b/g) || [];
-  return d.find(x => tipos.some(t => x.tipos.test(t))) || null;
-}
-const deptoStats = new Map(); // robot|pc|depto -> { ok, err, reint, ultimo, ultimoErr }
-function contarEvento(ev) {
-  const dp = deptoDe(ev.robot, ev.mensaje); if (!dp) return;
-  const k = `${ev.robot}|${ev.pc}|${dp.id}`;
-  const x = deptoStats.get(k) || { ok: 0, err: 0, reint: 0, ultimo: null, ultimoErr: null };
-  if (ev.tipo === 'ok') { x.ok++; if (!x.ultimo || ev.created_at > x.ultimo) x.ultimo = ev.created_at; }
-  else if (ev.tipo === 'error') { x.err++; if (!x.ultimoErr || ev.created_at > x.ultimoErr) x.ultimoErr = ev.created_at; }
-  else x.reint++;
-  deptoStats.set(k, x);
-}
-const inicioDiaGT = () => { const f = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' }); return new Date(f + 'T00:00:00-06:00').toISOString(); };
 const GRACIA_SEG = 90; // margen extra antes de declarar "caído" (intervalo*2 + gracia)
 /* ============================================ */
 
@@ -201,11 +173,6 @@ function drawRoom(r, t) {
   px(ctx, 74, 4, 12, 16, col); px(ctx, 74, 20, 6, 3, col); px(ctx, 80, 20, 6, 2, col);
   px(ctx, 77, 8, 6, 6, 'rgba(0,0,0,.25)');
 
-  const deptos = meta(k.split('|')[0]).deptos;
-  const activo = deptos && est === 'trabajando' ? deptoDe(k.split('|')[0], s?.detalle) : null;
-  const conError = deptos && est === 'error' ? deptoDe(k.split('|')[0], s?.ultimo_error) : null;
-  if (deptos) drawCorreos(ctx, r, t, deptos, est, activo, conError, dim);
-  else {
   // escritorio + monitor
   px(ctx, 20, 58, 36, 4, '#7c5a3a'); px(ctx, 22, 62, 3, 14, '#5c4128'); px(ctx, 51, 62, 3, 14, '#5c4128');
   px(ctx, 28, 44, 20, 14, '#1f2937');
@@ -219,7 +186,6 @@ function drawRoom(r, t) {
   px(ctx, 112, 56, 26, 14, '#d1d5db'); px(ctx, 112, 56, 26, 3, '#9ca3af'); px(ctx, 114, 70, 22, 6, '#6b7280');
   px(ctx, 132, 60, 2, 2, est === 'trabajando' ? '#22c55e' : est === 'error' ? '#ef4444' : '#374151');
   if (est === 'trabajando') { const p = (t / 40) % 14; px(ctx, 117, 70 + p * 0.6, 16, 3 + p * 0.4, '#fff'); }
-  }
 
   // robot
   if (sleep) {
@@ -230,21 +196,13 @@ function drawRoom(r, t) {
     px(ctx, 118, 8, 8, 8, '#e9d5ff'); px(ctx, 121, 8, 6, 6, '#3a3046');
   } else if (!dead) {
     let rx = 38, ry = 80, bob = 0, shake = 0;
-    if (deptos) {
-      rx = 80; ry = 82;
-      if (est === 'trabajando') {
-        const xi = activo ? ventanillaX(deptos, activo) : 80;
-        const cyc = ((t + r.phase) / 2600) % 1; const tri = cyc < .5 ? cyc * 2 : 2 - cyc * 2;
-        rx = 80 + (xi - 80) * Math.min(1, tri * 1.4); bob = Math.floor(t / 140) % 2;
-        if (activo && tri > .7) sobre(ctx, rx, ry - 12, xi, 50, (tri - .7) / .3, activo.color);
-      } else if (est === 'error') { shake = Math.floor(t / 60) % 2 ? 1 : -1; if (conError) rx = ventanillaX(deptos, conError); }
-    } else if (est === 'trabajando') {
+    if (est === 'trabajando') {
       const cyc = ((t + r.phase) / 3200) % 1; const tri = cyc < .5 ? cyc * 2 : 2 - cyc * 2;
       const e = tri < .15 ? 0 : tri > .85 ? 1 : (tri - .15) / .7;
       rx = 38 + e * 82; bob = Math.floor(t / 140) % 2;
     } else if (est === 'error') shake = Math.floor(t / 60) % 2 ? 1 : -1;
     drawBot(ctx, rx + shake, ry - bob, col, est, t);
-    if (est === 'trabajando' && s?.llamada) bubble(ctx, rx, ry - 26, (deptos ? '' : '#') + String(s.llamada).slice(-8), '#fff', '#111');
+    if (est === 'trabajando' && s?.llamada) bubble(ctx, rx, ry - 26, '#' + String(s.llamada).slice(-8), '#fff', '#111');
     if (est === 'error') bubble(ctx, rx, ry - 26, '!', '#ef4444', '#fff');
     if (est === 'esperando') {
       const z = (t / 900) % 1;
@@ -272,43 +230,6 @@ function drawRoom(r, t) {
   ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
 }
 
-/* Sala de correos: una ventanilla + buzón por departamento */
-const ventanillaX = (deptos, d) => { const n = deptos.length, i = deptos.indexOf(d); return Math.round(W * (i + 1) / (n + 1)); };
-function drawCorreos(ctx, r, t, deptos, est, activo, conError, dim) {
-  const host = r.k.split('|').slice(0, 2).join('|');
-  deptos.forEach(d => {
-    const cx = ventanillaX(deptos, d), x0 = cx - 22;
-    const st = deptoStats.get(`${host}|${d.id}`) || {};
-    const reciente = st.ultimo && Date.now() - new Date(st.ultimo).getTime() < 3 * 60000;
-    const enUso = activo === d, mal = conError === d;
-    // rótulo colgado en el muro
-    px(ctx, cx - 26, 32, 52, 9, dim ? '#3b3340' : d.color); px(ctx, cx - 26, 32, 52, 1, 'rgba(255,255,255,.35)');
-    ctx.fillStyle = '#111'; ctx.font = '4px "Press Start 2P"';
-    const tw = ctx.measureText(d.rotulo).width; ctx.fillText(d.rotulo, Math.round(cx - tw / 2), 39);
-    // mostrador
-    px(ctx, x0, 56, 44, 5, '#7c5a3a'); px(ctx, x0, 56, 44, 1, '#9a7350'); px(ctx, x0 + 2, 61, 40, 9, '#5c4128');
-    // casilleros (pila de sobres según enviados hoy)
-    const pila = Math.min(6, st.ok || 0);
-    for (let i = 0; i < pila; i++) px(ctx, x0 + 4 + (i % 3) * 5, 51 - Math.floor(i / 3) * 3, 4, 3, i % 2 ? '#f9fafb' : '#e5e7eb');
-    // buzón
-    const bx = x0 + 28;
-    px(ctx, bx, 44, 12, 12, mal ? '#b91c1c' : '#475569'); px(ctx, bx, 44, 12, 2, 'rgba(255,255,255,.25)');
-    px(ctx, bx + 2, 48, 8, 2, '#111827');
-    // banderita: arriba si envió hace poco o está enviando
-    const arriba = enUso || reciente;
-    px(ctx, bx + 12, arriba ? 42 : 50, 1, arriba ? 8 : 4, '#9ca3af');
-    px(ctx, bx + 13, arriba ? 42 : 50, 4, 3, arriba && !dim ? d.color : '#4b5563');
-    if (enUso && !dim) { ctx.fillStyle = `rgba(255,255,255,${.12 + .1 * Math.sin(t / 120)})`; ctx.fillRect(x0, 30, 44, 42); }
-    if (mal && !dim) bubble(ctx, cx, 30, '!', '#ef4444', '#fff');
-    // contador del día
-    ctx.fillStyle = dim ? '#6b6475' : '#e5e7eb'; ctx.font = '5px "Press Start 2P"';
-    const c = String(st.ok || 0); ctx.fillText(c, Math.round(cx - ctx.measureText(c).width / 2), 68);
-  });
-}
-function sobre(ctx, x1, y1, x2, y2, p, col) {
-  const x = x1 + (x2 - x1) * p, y = y1 + (y2 - y1) * p - Math.sin(p * Math.PI) * 14;
-  px(ctx, x - 3, y - 2, 7, 5, '#f9fafb'); px(ctx, x - 3, y - 2, 7, 1, col); px(ctx, x, y, 1, 1, col);
-}
 function drawBot(ctx, x, y, col, est, t) {
   x = Math.round(x); y = Math.round(y);
   px(ctx, x - 5, y + 13, 12, 2, 'rgba(0,0,0,.35)');           // sombra
@@ -378,13 +299,9 @@ function renderInfo() {
       <div class="row"><span class="name" style="color:${m.color}">${esc(m.nombre)}</span>
         <span class="badge" style="background:${ESTADOS[e].c}">${ESTADOS[e].txt}</span></div>
       <div class="row meta"><span>PC: ${esc(pc)}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
-      <div class="det">${esc(e === 'caido' ? `Sin reportar desde ${s ? hhmm(s.last_seen) : '—'} (esperado cada ${Math.round((s?.intervalo_seg || 180) / 60)} min)` : e === 'sindatos' ? 'Aún no reporta al monitor' : e === 'durmiendo' ? `Fuera de horario (${meta(id).horario.desde}–${meta(id).horario.hasta})${s ? ' · última: ' + (s.detalle || '') : ''}` : (s?.detalle || '') + (s?.llamada ? (m.deptos ? ' · Ref. ' : ' · Llamada ') + s.llamada : ''))}</div>
+      <div class="det">${esc(e === 'caido' ? `Sin reportar desde ${s ? hhmm(s.last_seen) : '—'} (esperado cada ${Math.round((s?.intervalo_seg || 180) / 60)} min)` : e === 'sindatos' ? 'Aún no reporta al monitor' : e === 'durmiendo' ? `Fuera de horario (${meta(id).horario.desde}–${meta(id).horario.hasta})${s ? ' · última: ' + (s.detalle || '') : ''}` : (s?.detalle || '') + (s?.llamada ? ' · Llamada ' + s.llamada : ''))}</div>
       ${s?.ultimo_error ? `<div class="err-txt" title="${esc(s.ultimo_error)}">Último error: ${esc(s.ultimo_error)}</div>` : ''}
-      <div class="stats"><span>Hoy OK <b style="color:var(--ok)">${rs.ok_hoy}</b></span><span>Errores <b style="color:var(--err)">${rs.errores_hoy}</b></span></div>
-      ${m.deptos ? `<div class="deptos">${m.deptos.map(d => { const x = deptoStats.get(`${r.k}|${d.id}`) || {}; return `
-        <div class="depto"><span class="dot" style="background:${d.color}"></span><b>${esc(d.nombre)}</b>
-          <span>OK <b style="color:var(--ok)">${x.ok || 0}</b></span>${x.err ? `<span>Err <b style="color:var(--err)">${x.err}</b></span>` : ''}${x.reint ? `<span>Reint. <b style="color:var(--gold)">${x.reint}</b></span>` : ''}
-          <span class="meta">${x.ultimo ? 'último ' + hhmm(x.ultimo) : 'sin envíos hoy'}</span></div>`; }).join('')}</div>` : ''}`;
+      <div class="stats"><span>Hoy OK <b style="color:var(--ok)">${rs.ok_hoy}</b></span><span>Errores <b style="color:var(--err)">${rs.errores_hoy}</b></span></div>`;
     const p = prevEst.get(r.k);
     if (p && p !== e && (e === 'error' || e === 'caido')) alerta(e);
     prevEst.set(r.k, e);
@@ -400,7 +317,7 @@ function renderLog() {
   if (!eventos.length) { log.innerHTML = '<div class="empty">Sin eventos todavía</div>'; return; }
   log.innerHTML = eventos.slice(0, 60).map(ev => `
     <div class="ev"><time>${hhmm(ev.created_at)}</time>
-      <div><span class="t-${ev.tipo}">${ev.tipo.toUpperCase()}</span> <b>${esc(meta(ev.robot).nombre)}</b>${(d => d ? `<span class="tag" style="background:${d.color}">${esc(d.nombre)}</span>` : '')(deptoDe(ev.robot, ev.mensaje))}
+      <div><span class="t-${ev.tipo}">${ev.tipo.toUpperCase()}</span> <b>${esc(meta(ev.robot).nombre)}</b>
       ${ev.llamada ? '· ' + esc(ev.llamada) : ''}${ev.mensaje ? `<div class="meta">${esc(ev.mensaje)}</div>` : ''}</div></div>`).join('');
 }
 
@@ -433,12 +350,6 @@ async function initSupabase() {
     status.clear(); st.data.forEach(s => status.set(key(s.robot, s.pc), s));
     resumen.clear(); (rs.data || []).forEach(x => resumen.set(key(x.robot, x.pc), x));
     eventos = ev.data || [];
-    const conDeptos = ROBOTS.filter(r => r.deptos).map(r => r.id);
-    if (conDeptos.length) {
-      const { data: hoy } = await sb.from('robot_eventos').select('robot, pc, tipo, mensaje, created_at')
-        .in('robot', conDeptos).gte('created_at', inicioDiaGT()).limit(5000);
-      deptoStats.clear(); (hoy || []).forEach(contarEvento);
-    }
     ensureRooms(); renderInfo(); renderLog();
   };
   await cargar();
@@ -452,7 +363,7 @@ async function initSupabase() {
       status.set(key(s.robot, s.pc), s); ensureRooms(); renderInfo();
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'robot_eventos' }, p => {
-      eventos.unshift(p.new); eventos = eventos.slice(0, 100); contarEvento(p.new); renderLog(); recargarResumen();
+      eventos.unshift(p.new); eventos = eventos.slice(0, 100); renderLog(); recargarResumen();
     })
     .subscribe();
   setInterval(cargar, 5 * 60 * 1000); // respaldo por si se cae el realtime
@@ -466,24 +377,16 @@ function initDemo() {
   const base = [
     { robot: 'citas',       pc: 'HPC-CS-ROBOT01', estado: 'trabajando', llamada: '2611040123', detalle: 'Creando llamada', intervalo_seg: 300 },
     { robot: 'guias',       pc: 'HPC-CS-ROBOT01', estado: 'esperando',  detalle: 'Sin pendientes',  intervalo_seg: 180 },
+    { robot: 'mimo',        pc: 'HPC-MOSTRADOR',  estado: 'esperando',  detalle: 'Sin pendientes', intervalo_seg: 300, last: now - 26 * 60000 },
     { robot: 'digitadores', pc: 'HPC-CS-ROBOT02', estado: 'error', llamada: '2611040099', detalle: 'Error', intervalo_seg: 180,
       ultimo_error: 'Timeout 30000ms esperando #btnAceptar' },
-    { robot: 'correos',     pc: 'HPC-CS-ROBOT02', estado: 'trabajando', llamada: '89DC279B', detalle: 'Enviando autoconsumo_solicitud', intervalo_seg: 120 },
   ];
   base.forEach(b => status.set(key(b.robot, b.pc), { ...b, version: '1.0', last_seen: iso(b.last || now) }));
-  ROBOTS.forEach((r, i) => resumen.set(key(r.id, (base[i] || base[0]).pc), { ok_hoy: 10 + i * 7, errores_hoy: i === 3 ? 3 : i % 2 }));
-  for (let i = 0; i < 12; i++) eventos.push({ robot: ROBOTS[i % ROBOTS.length].id, tipo: i % 5 === 4 ? 'info' : 'ok', llamada: '26110400' + (50 + i), mensaje: i % 5 === 4 ? 'Ciclo completo' : null, created_at: iso(now - i * 140000) });
-  const TIPOS = ['autoconsumo_solicitud', 'autoconsumo_resuelto', 'garantia_taller', 'garantia_pendiente', 'garantia_resuelto'];
-  for (let i = 0; i < 9; i++) { const ev = { robot: 'correos', pc: 'HPC-CS-ROBOT02', tipo: i === 7 ? 'info' : 'ok', llamada: 'AC' + (100 + i), mensaje: `${TIPOS[i % 5]} → usuario@hpc.com.gt`, created_at: iso(now - i * 300000) }; eventos.push(ev); contarEvento(ev); }
-  eventos.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  ROBOTS.forEach((r, i) => resumen.set(key(r.id, base[i].pc), { ok_hoy: 10 + i * 7, errores_hoy: i === 3 ? 3 : i % 2 }));
+  for (let i = 0; i < 12; i++) eventos.push({ robot: ROBOTS[i % 4].id, tipo: i % 5 === 4 ? 'info' : 'ok', llamada: '26110400' + (50 + i), mensaje: i % 5 === 4 ? 'Ciclo completo' : null, created_at: iso(now - i * 140000) });
   ensureRooms(); renderInfo(); renderLog();
 
   setInterval(() => {
-    { const k = 'correos|HPC-CS-ROBOT02', s = status.get(k), tp = TIPOS[Math.floor(Math.random() * 5)];
-      if (s.estado === 'trabajando') { const ev = { robot: 'correos', pc: 'HPC-CS-ROBOT02', tipo: 'ok', llamada: s.llamada, mensaje: s.detalle.replace('Enviando ', '') + ' → usuario@hpc.com.gt', created_at: iso(Date.now()) }; eventos.unshift(ev); contarEvento(ev); resumen.get(k) && resumen.get(k).ok_hoy++; }
-      if (Math.random() < .25) Object.assign(s, { estado: 'esperando', llamada: null, detalle: 'Sin pendientes' });
-      else Object.assign(s, { estado: 'trabajando', llamada: 'AC' + Math.floor(100 + Math.random() * 900), detalle: 'Enviando ' + tp });
-      s.last_seen = iso(Date.now()); }
     ['citas', 'guias', 'digitadores'].forEach(id => {
       const k = [...status.keys()].find(x => x.startsWith(id + '|')); const s = status.get(k);
       const roll = Math.random();
