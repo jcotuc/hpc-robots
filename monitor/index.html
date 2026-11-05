@@ -24,12 +24,23 @@ button{font-family:"Press Start 2P",monospace;font-size:9px;background:var(--pan
 button:hover{border-color:var(--gold)}
 button.on{border-color:var(--ok);color:var(--ok)}
 .demo{font-family:"Press Start 2P",monospace;font-size:9px;color:#111;background:var(--gold);padding:6px 8px}
-main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;padding:16px}
-@media (max-width:980px){main{grid-template-columns:minmax(0,1fr)}}
-.mapa{background:#07060a;border:2px solid var(--line);line-height:0}
-#mapa{display:block;width:100%;image-rendering:pixelated;image-rendering:crisp-edges;cursor:pointer}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:16px}
-.card{background:var(--panel);border:2px solid var(--line);padding:10px 12px;display:grid;gap:6px;scroll-margin:16px}
+main{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:12px}
+.mapa{background:#07060a;border:2px solid var(--line);line-height:0;display:flex;align-items:center;justify-content:center;min-height:0;min-width:0}
+#mapa{display:block;image-rendering:pixelated;image-rendering:crisp-edges;cursor:pointer}
+.lateral{display:flex;flex-direction:column;gap:12px;min-height:0}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;align-content:start}
+.card{background:var(--panel);border:2px solid var(--line);padding:8px 10px;display:grid;gap:4px;scroll-margin:8px}
+/* Escritorio: todo cabe en la pantalla, sin scroll de página */
+@media (min-width:981px){
+  html,body{height:100%}
+  body{display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  header{padding:10px 16px}
+  main{flex:1;min-height:0;grid-template-columns:minmax(0,1fr) 340px;grid-template-rows:minmax(0,1fr)}
+  .cards{grid-template-columns:1fr;overflow:auto;flex:0 0 auto;max-height:72%;padding-right:2px;gap:6px}
+  .card{padding:6px 10px;gap:3px}
+  .lateral aside h2{padding:8px 12px}
+  .lateral aside{flex:1 1 0;min-height:120px;max-height:none;position:static}
+}
 .card.error{border-color:var(--err);animation:pulse 1s infinite}
 .card.caido{border-color:#3a3442}
 .card.foco{outline:2px solid var(--gold)}
@@ -47,15 +58,15 @@ main{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;padding:16p
 .area b{font-weight:600}
 .area .meta{margin-left:auto}
 .tag{font-family:"Press Start 2P",monospace;font-size:7px;padding:2px 4px;color:#111;margin-left:4px}
-aside{background:var(--panel);border:2px solid var(--line);display:flex;flex-direction:column;max-height:calc(100vh - 120px);position:sticky;top:16px}
+aside{background:var(--panel);border:2px solid var(--line);display:flex;flex-direction:column;min-height:0}
 aside h2{font-family:"Press Start 2P",monospace;font-size:10px;margin:0;padding:12px;border-bottom:2px solid var(--line);color:var(--gold)}
 #log{overflow:auto;padding:8px 12px;display:grid;gap:6px;font-size:12px}
 .ev{display:grid;grid-template-columns:52px 1fr;gap:6px;border-bottom:1px solid var(--line);padding-bottom:6px}
 .ev time{color:var(--muted);font-variant-numeric:tabular-nums}
 .ev .t-ok{color:var(--ok)} .ev .t-error{color:var(--err)} .ev .t-info{color:var(--wait)}
 .empty{color:var(--muted);font-size:12px;padding:8px 0}
-@media (max-width:980px){aside{position:static;max-height:420px}}
-@media (max-width:480px){header{padding:12px 16px}h1{font-size:12px}main{padding:12px}}
+@media (max-width:980px){aside{max-height:420px}}
+@media (max-width:480px){header{padding:12px 16px}h1{font-size:12px}main{padding:12px 16px}}
 </style>
 </head>
 <body>
@@ -71,11 +82,11 @@ aside h2{font-family:"Press Start 2P",monospace;font-size:10px;margin:0;padding:
   </div>
 </header>
 <main>
-  <section>
-    <div class="mapa"><canvas id="mapa" aria-label="Mapa del dungeon con un cuarto por robot"></canvas></div>
+  <div class="mapa" id="mapaBox"><canvas id="mapa" aria-label="Mapa del dungeon con un cuarto por robot"></canvas></div>
+  <div class="lateral">
     <div class="cards" id="cards"></div>
-  </section>
-  <aside><h2>BITÁCORA EN VIVO</h2><div id="log"><div class="empty">Sin eventos todavía</div></div></aside>
+    <aside><h2>BITÁCORA EN VIVO</h2><div id="log"><div class="empty">Sin eventos todavía</div></div></aside>
+  </div>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -198,21 +209,29 @@ function allKeys() {
 
 function layout() {
   const keys = allKeys();
-  const cw = cv.parentElement.clientWidth || 800;
-  const maxC = cw >= 1100 ? 3 : cw >= 560 ? 2 : 1;
-  cols = Math.max(1, Math.ceil(keys.length / Math.ceil(keys.length / maxC)));   // filas parejas: 4 cuartos = 2x2
-  const rows = Math.ceil(keys.length / cols);
-  MW = 2 * M + cols * RW + (cols - 1) * G; MH = 2 * M + rows * RH + (rows - 1) * G;
-  S = (cw * (window.devicePixelRatio || 1)) / MW;
+  const box = document.getElementById('mapaBox'), n = keys.length;
+  const cw = (box.clientWidth || 800) - 4;
+  const ch = pantallaCompleta.matches ? (box.clientHeight || 600) - 4 : Infinity;   // celular: solo el ancho manda
+  // prueba 1..n columnas y se queda con la que deja los cuartos más grandes
+  let mejor = null;
+  for (let c = 1; c <= n; c++) {
+    const r = Math.ceil(n / c), w = 2 * M + c * RW + (c - 1) * G, h = 2 * M + r * RH + (r - 1) * G;
+    const esc = Math.min(cw / w, ch / h);
+    if (!mejor || esc > mejor.esc + 1e-6) mejor = { c, r, w, h, esc };
+  }
+  cols = mejor.c; const rows = mejor.r; MW = mejor.w; MH = mejor.h;
+  const dpr = window.devicePixelRatio || 1;
+  cv.style.width = Math.floor(MW * mejor.esc) + 'px'; cv.style.height = Math.floor(MH * mejor.esc) + 'px';
+  S = mejor.esc * dpr;
   cv.width = Math.round(MW * S); cv.height = Math.round(MH * S);
-  cv.style.aspectRatio = `${MW} / ${MH}`;
   const viejos = new Map(cuartos); cuartos.clear();
   keys.forEach((k, i) => cuartos.set(k, { k, x: M + (i % cols) * (RW + G), y: M + Math.floor(i / cols) * (RH + G), c: i % cols, r: Math.floor(i / cols), fase: viejos.get(k)?.fase ?? Math.random() * 8000 }));
   construirFondo(keys.length, rows);
   renderCards();
 }
 let ultimaFirma = '';
-function quizasLayout() { const f = allKeys().join(',') + '|' + (cv.parentElement.clientWidth || 0); if (f !== ultimaFirma) { ultimaFirma = f; layout(); } }
+const pantallaCompleta = window.matchMedia('(min-width: 981px)');
+function quizasLayout() { const b = document.getElementById('mapaBox'); const f = allKeys().join(',') + '|' + b.clientWidth + 'x' + b.clientHeight; if (f !== ultimaFirma) { ultimaFirma = f; layout(); } }
 window.addEventListener('resize', () => { ultimaFirma = ''; quizasLayout(); });
 
 /* Roca + corredores (estático, se dibuja una vez por layout) */
