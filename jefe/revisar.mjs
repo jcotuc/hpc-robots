@@ -10,6 +10,7 @@
 import { crearMonitor } from '../shared/monitor.mjs'
 import { mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { abrirCSHP, cerrarCSHP, leerLlamada, cshpResponde, pendientesGuias } from './cshp.mjs'
+import { investigar, recordar } from './investigar.mjs'
 
 const E = process.env, args = process.argv.slice(2)
 const PROD = args.includes('--prod') || (!args.includes('--qa') && /^prod/i.test(E.AMBIENTE || ''))
@@ -27,7 +28,7 @@ const CARGA = {}       // pendientes reales por robot: { citas: { n, detalle }, 
 /* Una sola sesión de CSHP por corrida (se abre solo si hace falta) */
 let sesion = null
 async function sesionCSHP() { if (!sesion) sesion = await abrirCSHP(CSHP); return sesion }
-const mon = crearMonitor('jefe', { intervaloSeg: 300, activo: PROD })
+const mon = crearMonitor('jefe', { intervaloSeg: 180, activo: PROD })
 
 /* Horario de cada robot (igual que su programar-tarea.cmd) para no alarmar fuera de turno */
 const LS = [1, 2, 3, 4, 5, 6]
@@ -319,6 +320,10 @@ async function avisar(h, abierto) {
     <div style="background:#b91c1c;color:#fff;padding:10px 16px;font-weight:600">JEFE DEL DUNGEON · ALERTA</div>
     <div style="padding:16px"><h3 style="margin:0 0 10px">${esc(h.titulo)}</h3>
     <p style="margin:0 0 10px">${esc(h.detalle || '')}</p>
+    ${h.causa ? `<p style="margin:0 0 6px"><b>Causa probable:</b> ${esc(h.causa)}</p>` : ''}
+    ${h.accion ? `<p style="margin:0 0 6px"><b>Qué hacer:</b> ${esc(h.accion)}</p>` : ''}
+    ${h.evidencia ? `<p style="margin:0 0 6px"><b>Evidencia:</b><br>${esc(h.evidencia).replace(/\n/g, '<br>')}</p>` : ''}
+    ${h.aprendido ? `<p style="margin:0 0 10px;color:#92400e"><b>Lo que el Jefe ya sabe:</b><br>${esc(h.aprendido).replace(/\n/g, '<br>')}</p>` : ''}
     <p style="margin:0;color:#6b7280;font-size:12px">Robot: ${esc(NOMBRES[h.robot] || h.robot || '—')}${h.pc ? ' · PC ' + esc(h.pc) : ''} · detectado ${esc(horaGT(abierto))}<br>
     <a href="https://hpc-robots-monitor.vercel.app/">Ver el dungeon</a></p></div></div>`
   await q(CC, 'correos_cola?on_conflict=clave', { method: 'POST', prefer: 'resolution=ignore-duplicates,return=minimal', body: {
@@ -343,6 +348,26 @@ async function main() {
   ordenes.forEach((o) => log(`ORDEN ${o.accion} ${o.num_llamada}: ${o.sku_cshp} → ${o.sku_nuevo} (${o.motivo})`))
   encontrados.forEach((h) => log(`${h.severidad === 'alta' ? 'ALTA ' : 'MEDIA'} ${h.titulo} — ${h.detalle || ''}`))
   if (!encontrados.length && !ordenes.length) log('Todo en orden.')
+
+  // ── Investigar: causa, evidencia y qué hacer (solo hallazgos nuevos, sin causa o que cambiaron) ──
+  const abiertos = await q(KK, 'jefe_hallazgos?select=id,clave,abierto_en,avisado_en,detalle,causa,patrones&cerrado_en=is.null')
+    .catch(() => q(KK, 'jefe_hallazgos?select=id,clave,abierto_en,avisado_en,detalle&cerrado_en=is.null'))
+  const memoria = new Map((await q(KK, 'jefe_aprendizaje?select=*').catch((e) => { log(`(sin memoria: ${corto(e, 120)})`); return [] })).map((m) => [m.patron, m]))
+  const ctx = { q, KK, CC, NOMBRES, ROBOT_DIG, cshpCaido, corto, horaGT, haceMin, USUARIOS_ROBOT: [E.CSHP_PROD_USUARIO, E.CSHP_USUARIO, E.CSHP_ROBOT_USUARIOS].join(',').split(',').map((x) => x.trim()).filter(Boolean) }
+  const aprender = new Map()   // patron → datos nuevos (se cuentan una vez por hallazgo)
+  for (const h of encontrados) {
+    const ya = abiertos.find((a) => a.clave === h.clave)
+    if (ya && ya.causa && ya.detalle === (h.detalle || null)) continue
+    const inv = await investigar(h, ctx)
+    if (!inv) continue
+    h.causa = inv.causa; h.accion = inv.accion; h.evidencia = (inv.evidencia || []).filter(Boolean).join('\n')
+    h.patrones = (inv.patrones || []).map((p) => p.patron)
+    h.aprendido = recordar(inv.patrones || [], memoria).join('\n')
+    h.investigado = true
+    for (const p of inv.patrones || []) if (!(ya?.patrones || []).includes(p.patron)) aprender.set(p.patron, p)
+    log(`   CAUSA ${h.clave}: ${h.causa || '?'}${h.accion ? ` → ${h.accion}` : ''}`)
+    if (h.aprendido) log(`   SABE  ${h.aprendido.replace(/\n/g, ' | ')}`)
+  }
   if (!PROD) return
   for (const o of ordenes) {
     try {
@@ -351,11 +376,21 @@ async function main() {
     } catch (e) { if (!/duplicate|23505/.test(String(e))) log(`No se pudo crear la orden ${o.num_llamada}: ${corto(e)}`) }
   }
 
-  const abiertos = await q(KK, 'jefe_hallazgos?select=id,clave,abierto_en,avisado_en&cerrado_en=is.null')
   const ahora = new Date().toISOString()
+  // ── Memoria: sumar lo que pasó de nuevo ──
+  const horaAhora = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Guatemala', hour: '2-digit', hour12: false }).format(new Date()).padStart(2, '0')
+  for (const [patron, p] of aprender) {
+    const m = memoria.get(patron) || { patron, veces: 0, primera: ahora, horas: {}, resueltos: 0, minutos_resolver: 0 }
+    const fila = { ...m, robot: p.robot || m.robot || null, causa: p.causa || m.causa, accion: p.accion || m.accion, ejemplo: p.ejemplo || m.ejemplo || null,
+      veces: (m.veces || 0) + 1, ultima: ahora, horas: { ...(m.horas || {}), [horaAhora]: ((m.horas || {})[horaAhora] || 0) + 1 } }
+    await q(KK, 'jefe_aprendizaje?on_conflict=patron', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal', body: fila })
+      .then(() => log(`APRENDIÓ ${patron} (${fila.veces} vez/veces)`)).catch((e) => log(`No se pudo guardar aprendizaje: ${corto(e, 150)}`))
+  }
   for (const h of encontrados) {
     const ya = abiertos.find((a) => a.clave === h.clave)
-    const datos = { robot: h.robot || null, pc: h.pc || null, centro: h.centro || null, severidad: h.severidad, titulo: h.titulo, detalle: h.detalle || null, ultimo_visto: ahora }
+    const datos = { robot: h.robot || null, pc: h.pc || null, centro: h.centro || null, severidad: h.severidad, titulo: h.titulo, detalle: h.detalle || null, ultimo_visto: ahora,
+      ...(h.investigado ? { causa: h.causa || null, accion: h.accion || null, evidencia: h.evidencia || null, aprendido: h.aprendido || null,
+        patrones: [...new Set([...(ya?.patrones || []), ...(h.patrones || [])])], investigado_en: ahora } : {}) }
     if (ya) {
       if (!ya.avisado_en && await avisar(h, ya.abierto_en).catch(() => false)) datos.avisado_en = ahora
       await q(KK, `jefe_hallazgos?id=eq.${ya.id}`, { method: 'PATCH', body: datos, prefer: 'return=minimal' })
@@ -374,6 +409,13 @@ async function main() {
     const rev = prefijo(a.clave)
     if (!a.clave.startsWith('jefe:revision:') && !revisadas.includes(rev)) continue
     await q(KK, `jefe_hallazgos?id=eq.${a.id}`, { method: 'PATCH', body: { cerrado_en: ahora }, prefer: 'return=minimal' })
+    // memoria: cuánto tardó en resolverse
+    const mins = Math.max(1, Math.round((Date.now() - new Date(a.abierto_en).getTime()) / 60000))
+    for (const patron of a.patrones || []) {
+      const m = memoria.get(patron); if (!m) continue
+      await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal',
+        body: { resueltos: (m.resueltos || 0) + 1, minutos_resolver: Number(m.minutos_resolver || 0) + mins } }).catch(() => {})
+    }
     mon.ok(null, `Resuelto: ${a.clave}`)
     log(`CERRADO ${a.clave}`)
   }
@@ -382,7 +424,7 @@ async function main() {
 }
 
 // Seguro: si algo se traba (CSHP, Chromium), la corrida termina sola y la tarea programada puede volver a correr
-setTimeout(() => { log('ERROR la revisión pasó de 4 min: se cerró a la fuerza'); process.exit(3) }, 4 * 60_000).unref()
+setTimeout(() => { log('ERROR la revisión pasó de 2.5 min: se cerró a la fuerza'); process.exit(3) }, 150_000).unref()
 
 main()
   .catch((e) => { log(`ERROR ${corto(e)}`); mon.error(e); process.exitCode = 1 })

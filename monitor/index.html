@@ -215,6 +215,7 @@ function actualizarUbicaciones() {
   });
 }
 let hallazgos = [];          // jefe_hallazgos abiertos
+let aprendizaje = [];        // jefe_aprendizaje: causas que el Jefe ya conoce (más repetidas primero)
 const viajes = [];           // mensajeros caminando por los corredores
 const aviones = [];          // correos enviados (avioncitos de papel)
 const festejos = new Map();  // cuarto -> momento en que el jefe cerró su hallazgo
@@ -1175,7 +1176,8 @@ function abrirTip(q, e) {
   const limpio = ev => { let t = String(ev.mensaje || ''); if (ev.llamada) t = t.replace(new RegExp('^\\s*(OK\\s+)?' + ev.llamada.replace(/[-]/g, '\\-') + '\\s*', 'i'), ''); return t.replace(/\s+/g, ' ').trim().slice(0, 42); };
   tip.innerHTML = `<b class="n" style="color:${m.color}">${esc(m.global ? m.nombre : nombreDe(q.k))}</b><span class="meta">${ESTADOS[e2].txt} · ${hace(s?.last_seen)}</span>`
     + (enCola.length ? `<div class="l"><b>Por imprimir:</b> ${esc(enCola.slice(0, 4).join(', '))}${enCola.length > 4 ? '…' : ''}</div>` : '')
-    + hs.slice(0, 3).map(h => `<div class="l"><span class="dot" style="background:${HALLAZGO_COLOR(h)}"></span>${esc(h.titulo)}</div>`).join('')
+    + hs.slice(0, 3).map(h => `<div class="l"><span class="dot" style="background:${HALLAZGO_COLOR(h)}"></span>${esc(h.titulo)}</div>${h.causa ? `<div class="l meta">↳ ${esc(String(h.causa).slice(0, 90))}</div>` : ''}`).join('')
+    + (m.sala === 'jefatura' && aprendizaje.length ? `<div class="l"><b>Lo que ya aprendí:</b></div>` + aprendizaje.slice(0, 3).map(a => `<div class="l meta">${a.veces}× ${esc(String(a.causa || a.patron).slice(0, 80))}</div>`).join('') : '')
     + (evs.length ? evs.map(ev => `<div class="l"><span class="meta">${hhmm(ev.created_at)}</span><span style="color:${ev.tipo === 'ok' ? 'var(--ok)' : ev.tipo === 'error' ? 'var(--err)' : 'var(--wait)'}">${ev.tipo.toUpperCase()}</span>${esc(ev.llamada || '')} <span class="meta">${esc(limpio(ev))}</span></div>`).join('') : '<span class="meta">Sin movimientos recientes</span>');
   tip.hidden = false; tipCuarto = q.k;
   const w = tip.offsetWidth, h = tip.offsetHeight;
@@ -1227,7 +1229,8 @@ function renderCards() {
           <span class="meta">${x.ultimo ? 'último ' + hhmm(x.ultimo) : 'sin movimiento hoy'}</span></div>`; }).join('')}</div>` : ''}
       ${(m.global ? hallazgos : hallazgosDe(k)).length ? `<div class="areas">${(m.global ? hallazgos : hallazgosDe(k)).slice(0, 6).map(h => `
         <div class="area" title="${esc(h.detalle || '')}"><span class="dot" style="background:${HALLAZGO_COLOR(h)}"></span>${m.global ? `<b>${esc(meta(h.robot).nombre)}</b>` : '<b style="color:var(--gold)">Jefe</b>'}
-          <span>${esc(h.titulo)}</span><span class="meta">${hace(h.abierto_en)}</span></div>`).join('')}</div>` : (m.global && e !== 'sindatos' ? '<div class="meta">Sin hallazgos: todo en orden</div>' : '')}
+          <span>${esc(h.titulo)}</span><span class="meta">${hace(h.abierto_en)}</span></div>${h.causa ? `
+        <div class="meta" style="padding:0 0 4px 14px" title="${esc(h.evidencia || '')}">↳ <b>Causa:</b> ${esc(h.causa)}${h.accion ? ` · <b>Hacer:</b> ${esc(h.accion)}` : ''}${h.aprendido ? `<br>🧠 ${esc(h.aprendido.split('\n')[0])}` : ''}</div>` : ''}`).join('')}</div>` : (m.global && e !== 'sindatos' ? '<div class="meta">Sin hallazgos: todo en orden</div>' : '')}
     </article>`;
   }).join('');
   document.getElementById('kpis').innerHTML = [
@@ -1322,6 +1325,8 @@ async function initSupabase() {
   const cargarHallazgos = async () => {
     const { data, error } = await sb.from('jefe_hallazgos').select('*').is('cerrado_en', null).order('abierto_en');
     if (!error) hallazgos = data || [];
+    const ap = await sb.from('jefe_aprendizaje').select('patron,causa,accion,veces,ultima').order('veces', { ascending: false }).limit(20);
+    if (!ap.error) aprendizaje = ap.data || [];
   };
   await cargar();
   let t; const recargarResumen = () => { clearTimeout(t); t = setTimeout(async () => {
