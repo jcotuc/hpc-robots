@@ -295,7 +295,9 @@ async function revisarCarga() {
 /* Garantías (manual): errores al crear la NC → alto; NDC esperando mucho a que alguien corra el robot → medio */
 async function revisarGarantias() {
   const out = []
-  const mal = await q(KK, `garantias_manuales?select=id,codigo_cliente,external_id,sync_status,sync_retries&sync_status=in.(rejected,needs_review,duplicated)&deleted=eq.false&last_sync_attempt_at=gte.${haceMin(7 * 24 * 60)}&limit=50`)
+  // el filtro de estado va aquí (no en la URL): el enum de la app no tiene todos los valores (p. ej. 'rejected')
+  const mal = (await q(KK, `garantias_manuales?select=id,codigo_cliente,external_id,sync_status,sync_retries&deleted=eq.false&last_sync_attempt_at=gte.${haceMin(7 * 24 * 60)}&limit=500`))
+    .filter((g) => ['rejected', 'needs_review', 'duplicated'].includes(g.sync_status)).slice(0, 50)
   if (mal.length) out.push({ clave: 'garantias:error', robot: 'garantias', severidad: 'alta',
     titulo: `${mal.length} garantía(s) NDC con problema al crear la llamada`,
     detalle: mal.slice(0, 10).map((g) => `Cliente ${g.codigo_cliente}${g.external_id ? ` (${g.external_id})` : ''}: ${g.sync_status === 'rejected' ? 'rechazada tras 3 intentos' : g.sync_status === 'duplicated' ? 'duplicada en CSHP' : 'creada en CSHP pero revisar en Supabase'}`).join(' · ') })
@@ -379,6 +381,13 @@ async function main() {
   mon.fin(encontrados.length ? `${encontrados.length} hallazgo(s) abiertos${altos ? ` · ${altos} alto(s)` : ''}` : 'Todo en orden')
 }
 
+// Seguro: si algo se traba (CSHP, Chromium), la corrida termina sola y la tarea programada puede volver a correr
+setTimeout(() => { log('ERROR la revisión pasó de 4 min: se cerró a la fuerza'); process.exit(3) }, 4 * 60_000).unref()
+
 main()
   .catch((e) => { log(`ERROR ${corto(e)}`); mon.error(e); process.exitCode = 1 })
-  .finally(async () => { await cerrarCSHP(sesion); await mon.flush() })
+  .finally(async () => {
+    await Promise.race([cerrarCSHP(sesion), new Promise((r) => setTimeout(r, 15_000))])   // cerrar Chromium a veces se traba
+    await mon.flush()
+    process.exit(process.exitCode ?? 0)
+  })
