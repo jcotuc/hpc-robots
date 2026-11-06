@@ -684,57 +684,137 @@ function destinoJefe(t) {
   for (const h of orden) { const k = [...cuartos.keys()].find(k => !esGlobal(k) && hallazgosDe(k).includes(h)); if (k && !ks.includes(k)) ks.push(k); }
   return ks.length ? ks[Math.floor(t / 4000) % ks.length] : null;
 }
-function jefe(x, y, t, { pose = 'pie', est = 'esperando', tabla = false } = {}) {
-  robot(x, y, '#f59e0b', { pose, t, est });
-  const by = y - (pose === 'camina' ? Math.floor(t / 130) % 2 : 0);
-  px(x - 5, by - 15, 12, 2, '#111827'); px(x - 2, by - 21, 7, 6, '#111827'); px(x - 2, by - 17, 7, 1, '#b91c1c');   // sombrero
-  px(x - 2, by + 1, 7, 1, '#7c2d12'); px(x, by + 2, 2, 3, '#b91c1c');                                           // corbata
-  if (tabla) { px(x + 6, by + 1, 6, 8, '#a16207'); px(x + 7, by + 2, 4, 6, '#f9fafb'); px(x + 8, by + 3, 2, 1, '#6b7280'); px(x + 8, by + 5, 2, 1, '#6b7280'); }
+/* ---------- El Jefe: robot rey, más grande, con capa, corona y vida propia ---------- */
+/* x, y = pies. pose: 'pie' | 'camina' | 'sentado' | 'dormido' · señala: ángulo (rad) o null · mano: null | 'cafe' | 'tabla' */
+function jefeRey(x, y, t, { pose = 'pie', señala = null, mano = null, aura = null, mira = 0, k = 1.3 } = {}) {
+  ctx.save(); ctx.translate(Math.round(x), Math.round(y)); ctx.scale(k, k);
+  const sentado = pose === 'sentado' || pose === 'dormido';
+  const paso = pose === 'camina' ? Math.floor(t / 160) % 2 : 0;
+  const resp = Math.floor(t / 700) % 2;                     // respiración
+  const dy = (sentado ? -4 : 0) - paso - resp;
+  const sway = Math.sin(t / 260) * (pose === 'camina' ? 2 : 1);
+  if (aura) {                                               // aura de alerta
+    const g = ctx.createRadialGradient(0, -22, 4, 0, -22, 30);
+    g.addColorStop(0, aura.replace('1)', (.28 + .14 * Math.sin(t / 180)).toFixed(2) + ')')); g.addColorStop(1, aura.replace('1)', '0)'));
+    ctx.fillStyle = g; ctx.fillRect(-30, -52, 60, 60);
+  }
+  if (!sentado) px(-11, -1, 22, 3, 'rgba(0,0,0,.45)');     // sombra
+  // capa (atrás)
+  px(-11 + sway, -26 + dy, 22, 22, '#7f1d1d'); px(-10 + sway, -26 + dy, 20, 20, '#991b1b');
+  px(-11 + sway * 1.5, -6 + dy, 6, 3, '#7f1d1d'); px(5 + sway * 1.5, -6 + dy, 6, 3, '#7f1d1d');
+  px(-10 + sway, -26 + dy, 20, 1, '#fbbf24');
+  // piernas y botas
+  if (!sentado) {
+    px(-6, -9 - paso, 4, 8 + paso, '#374151'); px(2, -9 + paso - paso, 4, 8 - paso + paso, '#374151');
+    px(-7, -2 - paso, 6, 2, '#92400e'); px(1, -2, 6, 2, '#92400e');
+  }
+  // torso de armadura dorada
+  px(-8, -25 + dy, 16, 16, '#b45309'); px(-7, -24 + dy, 14, 14, '#d97706'); px(-5, -22 + dy, 10, 8, '#fbbf24');
+  const gema = (Math.sin(t / 300) + 1) / 2;
+  px(-1, -19 + dy, 3, 3, gema > .5 ? '#ef4444' : '#b91c1c'); px(0, -19 + dy, 1, 1, '#fecaca');
+  px(-8, -11 + dy, 16, 2, '#78350f'); px(-2, -11 + dy, 4, 2, '#fde68a');                       // cinturón
+  // hombreras con picos
+  px(-13, -26 + dy, 6, 5, '#92400e'); px(7, -26 + dy, 6, 5, '#92400e');
+  px(-13, -26 + dy, 6, 1, '#fbbf24'); px(7, -26 + dy, 6, 1, '#fbbf24');
+  px(-12, -28 + dy, 2, 2, '#fde68a'); px(10, -28 + dy, 2, 2, '#fde68a');
+  // brazo izquierdo
+  px(-12, -21 + dy, 3, 9, '#9ca3af'); px(-12, -13 + dy, 3, 2, '#6b7280');
+  // brazo derecho: señala, sostiene algo o cuelga
+  if (señala !== null) {
+    const ex = Math.cos(señala), ey = Math.sin(señala);
+    for (let i = 0; i < 9; i++) px(10 + ex * i - 1, -20 + dy + ey * i, 3, 3, '#9ca3af');
+    px(10 + ex * 9 - 1, -20 + dy + ey * 9, 3, 3, '#e5e7eb');
+  } else if (mano === 'cafe') {
+    px(9, -18 + dy, 3, 6, '#9ca3af'); px(10, -20 + dy, 5, 5, '#f5f5f4'); px(14, -19 + dy, 2, 3, '#f5f5f4'); px(11, -20 + dy, 3, 1, '#78350f');
+    if (Math.floor(t / 400) % 2) px(12, -24 + dy, 1, 2, 'rgba(229,231,235,.6)');
+  } else if (mano === 'tabla') {
+    px(9, -19 + dy, 3, 8, '#9ca3af'); px(10, -18 + dy, 7, 9, '#a16207'); px(11, -17 + dy, 5, 7, '#f9fafb'); px(12, -15 + dy, 3, 1, '#6b7280'); px(12, -13 + dy, 3, 1, '#6b7280');
+  } else { px(9, -21 + dy + (pose === 'camina' ? (paso ? 1 : -1) : 0), 3, 9, '#9ca3af'); }
+  // cabeza: casco plateado con visor
+  px(-6, -37 + dy, 12, 11, '#d1d5db'); px(-6, -37 + dy, 12, 1, '#f3f4f6'); px(-6, -27 + dy, 12, 1, '#6b7280');
+  px(-6, -33 + dy, 12, 3, '#111827');
+  const ojo = aura && aura.startsWith('rgba(239') ? '#f87171' : pose === 'dormido' ? '#1f2937' : '#22d3ee';
+  const parp = (t % 3800) < 140 || pose === 'dormido';
+  const m = Math.max(-1, Math.min(1, mira));
+  if (!parp) { px(-4 + m, -32 + dy, 3, 1, ojo); px(1 + m, -32 + dy, 3, 1, ojo); }
+  else { px(-4, -32 + dy, 3, 1, '#374151'); px(1, -32 + dy, 3, 1, '#374151'); }
+  px(-3, -29 + dy, 6, 1, '#6b7280');                                                     // rejilla de la boca
+  // corona
+  px(-6, -41 + dy, 12, 4, '#facc15'); px(-6, -41 + dy, 12, 1, '#fef08a');
+  px(-6, -44 + dy, 2, 3, '#facc15'); px(-1, -45 + dy, 2, 4, '#facc15'); px(4, -44 + dy, 2, 3, '#facc15');
+  px(-1, -40 + dy, 2, 2, '#ef4444'); px(-5, -40 + dy, 1, 1, '#22d3ee'); px(4, -40 + dy, 1, 1, '#22d3ee');
+  ctx.restore();
 }
+const ALTO_JEFE = 47 * 1.3;
 function humo(x, y, t0) {
   const p = (performance.now() - t0) / 700; if (p > 1) return;
   ctx.globalAlpha = 1 - p;
   for (let i = 0; i < 6; i++) { const a = i / 6 * Math.PI * 2, r = 4 + p * 12; px(x + Math.cos(a) * r - 2, y + Math.sin(a) * r - 2, 4, 4, '#e5e7eb'); }
   ctx.globalAlpha = 1;
 }
+const FRASES_JEFE = ['TODO EN ORDEN', '¡A TRABAJAR!', 'BIEN, EQUIPO', 'REVISANDO…', 'NADA SE ME ESCAPA', '¿Y ESAS LLAMADAS?'];
 function salaJefatura(q, s, est, t) {
   const caido = ['caido', 'sindatos'].includes(est);
-  // tablero de alertas en el muro
-  px(52, 28, 80, 30, '#1f2937'); px(52, 28, 80, 2, '#f59e0b'); px(53, 30, 78, 27, '#111827');
-  texto(caido ? 'JEFE SIN REPORTAR' : `ALERTAS ${hallazgos.length}`, 92, 37, 4, caido ? '#9ca3af' : hallazgos.length ? '#fca5a5' : '#86efac', true);
-  if (!hallazgos.length && !caido) texto('TODO EN ORDEN', 92, 48, 4, '#86efac', true);
-  hallazgos.slice(0, 4).forEach((h, i) => { px(57, 41 + i * 4, 3, 3, HALLAZGO_COLOR(h)); px(62, 42 + i * 4, 30 + (h.titulo.length * 7) % 36, 1, '#9ca3af'); });
-  // escritorio grande, silla, planta y trofeo
-  px(86, 50, 14, 18, '#3f3f46'); px(85, 66, 16, 4, '#27272a');                                                // silla
+  const C = RW / 2;
+  // estandartes rojos con corona
+  [[26, '#991b1b'], [RW - 36, '#991b1b']].forEach(([bx, c]) => {
+    px(bx, 27, 10, 22, c); px(bx, 27, 10, 2, '#fbbf24'); px(bx + 2, 49, 3, 3, c); px(bx + 5, 49, 3, 3, c);
+    px(bx + 3, 34, 4, 2, '#facc15'); px(bx + 3, 33, 1, 1, '#facc15'); px(bx + 6, 33, 1, 1, '#facc15');
+  });
+  // alfombra roja desde la puerta de abajo hasta el escritorio
+  px(C - 11, 96, 22, RH - 100, '#7f1d1d'); px(C - 11, 96, 1, RH - 100, '#fbbf24'); px(C + 10, 96, 1, RH - 100, '#fbbf24');
+  // tablero de alertas
+  px(52, 27, 80, 22, '#1f2937'); px(52, 27, 80, 2, '#f59e0b'); px(53, 29, 78, 19, '#111827');
+  texto(caido ? 'JEFE SIN REPORTAR' : `ALERTAS ${hallazgos.length}`, C, 35, 4, caido ? '#9ca3af' : hallazgos.length ? '#fca5a5' : '#86efac', true);
+  if (!hallazgos.length && !caido) texto('TODO EN ORDEN', C, 44, 4, '#86efac', true);
+  hallazgos.slice(0, 3).forEach((h, i) => { px(57, 38 + i * 3, 3, 2, HALLAZGO_COLOR(h)); px(62, 39 + i * 3, 30 + (h.titulo.length * 7) % 36, 1, '#9ca3af'); });
+  // trono (respaldo alto dorado)
+  px(C - 13, 48, 26, 28, '#4c1d95'); px(C - 13, 48, 26, 2, '#facc15'); px(C - 15, 46, 4, 30, '#b45309'); px(C + 11, 46, 4, 30, '#b45309');
+  px(C - 15, 44, 4, 3, '#facc15'); px(C + 11, 44, 4, 3, '#facc15'); px(C - 2, 50, 4, 4, '#facc15');
   const d = jefeVa && !caido ? cuartos.get(jefeVa) : null;
-  if (!d) {   // sentado en su escritorio
+  const hs = d ? hallazgosDe(jefeVa) : [], alta = hs.some(h => h.severidad === 'alta');
+  const aura = d ? (alta ? 'rgba(239,68,68,1)' : 'rgba(245,158,11,1)') : null;
+  const sentado = !d && (caido || est === 'durmiendo' || est === 'trabajando');
+  if (sentado) {
     const pose = caido || est === 'durmiendo' ? 'dormido' : 'sentado';
-    jefe(93, 58 + (est === 'trabajando' ? Math.floor(t / 400) % 2 : 0), t, { pose, est: caido ? 'esperando' : est });
-    if (pose === 'dormido') zzz(100, 46, t, '196,181,253');
-    else if ([...festejos.values()].some(t0 => performance.now() - t0 < 4000)) globo(93, 40, '¡BIEN!', '#22c55e', '#052e16');
-    else if (est === 'trabajando') globo(93, 40, 'REVISANDO');
+    jefeRey(C, 94, t, { pose, mano: pose === 'sentado' ? 'tabla' : null, mira: Math.sin(t / 900) });
+    if (pose === 'dormido') zzz(C + 12, 40, t, '196,181,253');
+    else globo(C + 36, 56, 'REVISANDO');
   }
-  px(58, 72, 68, 5, '#7c5a3a'); px(58, 72, 68, 1, '#a07a50'); px(58, 77, 68, 18, '#5c4128'); px(62, 80, 60, 1, '#4a3420');
-  px(70, 66, 12, 6, '#f9fafb'); px(100, 62, 16, 10, '#1f2937'); px(102, 64, 12, 6, hallazgos.length ? '#7f1d1d' : '#14532d');
-  px(20, 84, 8, 10, '#78350f'); px(17, 74, 14, 10, '#16a34a'); px(20, 70, 8, 6, '#22c55e');                  // planta
-  px(150, 60, 22, 3, '#5c4128'); px(156, 52, 8, 6, '#facc15'); px(158, 58, 4, 2, '#ca8a04');                  // trofeo
-  if (d) {    // de pie frente al tablero, señalando hacia el cuarto con problema
-    const h = hallazgosDe(jefeVa)[0], dx = d.x - q.x, dy = d.y - q.y;
-    // se para junto a la puerta que da hacia ese cuarto
+  // escritorio con taza, papeles y sello
+  px(50, 76, 84, 5, '#7c5a3a'); px(50, 76, 84, 1, '#a07a50'); px(50, 81, 84, 15, '#5c4128'); px(54, 84, 76, 1, '#4a3420');
+  px(C - 2, 86, 4, 4, '#facc15');                                                        // escudo al frente
+  px(62, 70, 12, 6, '#f9fafb'); px(63, 71, 10, 1, '#9ca3af'); px(112, 66, 14, 10, '#1f2937'); px(114, 68, 10, 6, hallazgos.length ? '#7f1d1d' : '#14532d');
+  if (sentado || d) { px(100, 71, 5, 5, '#f5f5f4'); px(101, 71, 3, 1, '#78350f'); }
+  // planta y trofeo
+  px(16, 92, 8, 10, '#78350f'); px(13, 82, 14, 10, '#16a34a'); px(16, 78, 8, 6, '#22c55e');
+  px(152, 64, 22, 3, '#5c4128'); px(158, 56, 8, 6, '#facc15'); px(160, 62, 4, 2, '#ca8a04');
+  if (sentado) return null;
+  if (d) {    // de pie junto a la puerta del cuarto con problema, señalando con aura
+    const dx = d.x - q.x, dy = d.y - q.y;
     const lado = Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? 'izq' : 'der') : (dy < 0 ? 'arriba' : 'abajo');
-    const P = { izq: [26, 84, Math.PI], der: [158, 84, 0], arriba: [RW / 2 + 26, 54, -Math.PI / 2], abajo: [RW / 2 + 22, 100, Math.PI / 2] }[lado];
-    const [x, y, ang] = P;
-    jefe(x, y + (Math.floor(t / 300) % 2), t, { pose: 'pie', est: 'trabajando', tabla: true });
-    // flecha animada que apunta al cuarto
+    const P = { izq: [34, 112, Math.PI], der: [152, 112, 0], arriba: [150, 74, -Math.PI / 2], abajo: [C + 30, 114, Math.PI / 2] }[lado];
+    const [x, y, ang] = P, pisoton = alta ? Math.floor(t / 220) % 2 : 0;
+    jefeRey(x, y - pisoton, t, { pose: 'pie', señala: ang, aura, mira: Math.cos(ang) });
     const avance = (t / 120) % 3;
-    for (let i = 0; i < 5; i++) { const r = 11 + i * 3 + avance; px(x + Math.cos(ang) * r - 1, y + 2 + Math.sin(ang) * r - 1, 3, 3, i === 4 ? '#fde047' : '#f59e0b'); }
+    for (let i = 0; i < 4; i++) { const r = 26 + i * 4 + avance; px(x + Math.cos(ang) * r - 1, y - 26 + Math.sin(ang) * r - 1, 3, 3, i === 3 ? '#fde047' : '#f59e0b'); }
     const nombre = meta(jefeVa.split('|')[0]).nombre.toUpperCase();
-    const frase = h?.severidad === 'alta' ? '¡¡REVISEN!!' : '¿QUÉ PASA?';
-    globo(x, y - 26, (t % 3600) < 2400 ? (lado === 'izq' ? '← ' + nombre : lado === 'der' ? nombre + ' →' : lado === 'arriba' ? '↑ ' + nombre : '↓ ' + nombre) : frase, h ? HALLAZGO_COLOR(h) : '#f59e0b', '#111');
+    const frase = alta ? '¡¡REVISEN!!' : '¿QUÉ PASA?';
+    globo(x, y - ALTO_JEFE - 4, (t % 3600) < 2400 ? (lado === 'izq' ? '← ' + nombre : lado === 'der' ? nombre + ' →' : lado === 'arriba' ? '↑ ' + nombre : '↓ ' + nombre) : frase, hs[0] ? HALLAZGO_COLOR(hs[0]) : '#f59e0b', '#111');
+    return null;
   }
+  // todo en orden: patrulla su oficina, toma café, revisa el trofeo y la planta
+  const r = ruta(t + q.fase, [C, 112], [
+    { hacer: 'cafe', ms: 2600 }, { ir: [36, 110], ms: 1800 }, { hacer: 'planta', ms: 1400 },
+    { ir: [150, 108], ms: 2600 }, { hacer: 'trofeo', ms: 1600 }, { ir: [C, 112], ms: 1500 }, { hacer: 'mirar', ms: 1800 },
+  ]);
+  const camina = r.accion === 'camina';
+  jefeRey(r.x, r.y, t, { pose: camina ? 'camina' : 'pie', mano: r.accion === 'cafe' ? 'cafe' : null, mira: camina ? r.mira : r.accion === 'planta' ? -1 : r.accion === 'trofeo' ? 1 : Math.sin(t / 700) });
+  if (r.accion === 'trofeo' && Math.floor(t / 250) % 2) { px(162, 54, 1, 1, '#fff'); px(165, 58, 1, 1, '#fff'); }
+  const ciclo = Math.floor((t + q.fase) / 9000), dentro = (t + q.fase) % 9000;
+  if (!camina && dentro < 2400) globo(r.x, r.y - ALTO_JEFE - 4, [...festejos.values()].some(t0 => performance.now() - t0 < 4000) ? '¡BIEN!' : FRASES_JEFE[ciclo % FRASES_JEFE.length], '#fde68a', '#111');
   return null;
 }
-/* En el cuarto con problema: aviso del Jefe colgado en el muro */
 function campanaJefe(t) {
   const p = (performance.now() - campana) / 3000; if (!campana || p >= 1) return;
   const a = Math.sin(t / 60) * 3;
