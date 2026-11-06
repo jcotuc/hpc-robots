@@ -9,7 +9,7 @@
  */
 import { crearMonitor } from '../shared/monitor.mjs'
 import { mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
-import { abrirCSHP, cerrarCSHP, leerLlamada, cshpResponde } from './cshp.mjs'
+import { abrirCSHP, cerrarCSHP, leerLlamada, cshpResponde, pendientesGuias } from './cshp.mjs'
 
 const E = process.env, args = process.argv.slice(2)
 const PROD = args.includes('--prod') || (!args.includes('--qa') && /^prod/i.test(E.AMBIENTE || ''))
@@ -23,6 +23,10 @@ const MAX_AUDITAR = Number(E.MAX_AUDITAR || 10)   // llamadas que abre en CSHP p
 const AUDITAR_DESDE = (E.AUDITAR_DESDE || '').trim()   // solo se auditan llamadas digitadas desde esta fecha (ISO)
 const normalizar = (t) => String(t ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
 let cshpCaido = null   // si CSHP no responde, los errores de los robots no se mandan por correo (se avisa una sola vez)
+const CARGA = {}       // pendientes reales por robot: { citas: { n, detalle }, ... } (n = null si no se pudo revisar)
+/* Una sola sesión de CSHP por corrida (se abre solo si hace falta) */
+let sesion = null
+async function sesionCSHP() { if (!sesion) sesion = await abrirCSHP(CSHP); return sesion }
 const mon = crearMonitor('jefe', { intervaloSeg: 300, activo: PROD })
 
 /* Horario de cada robot (igual que su programar-tarea.cmd) para no alarmar fuera de turno */
@@ -74,10 +78,13 @@ async function revisarRobots() {
     const limite = (s.intervalo_seg || 180) * 2 + 90
     const edad = (Date.now() - new Date(s.last_seen).getTime()) / 1000
     const m = minEnHorario(s.robot)
-    if (edad > limite && m !== null && m * 60 >= limite)
+    const carga = CARGA[s.robot]
+    if (edad > limite && m !== null && m * 60 >= limite) {
+      if (carga && carga.n === 0) { log(`OK ${n} sin reportar desde ${horaGT(s.last_seen)}, pero sin pendientes (${carga.detalle})`); continue }
       out.push({ clave: `caido:${s.robot}|${s.pc}`, robot: s.robot, pc: s.pc, centro: s.centro, severidad: 'alta',
-        titulo: `${n} no reporta desde las ${horaGT(s.last_seen)}`,
-        detalle: `PC ${s.pc}. Debería reportar cada ${Math.round((s.intervalo_seg || 180) / 60)} min. Revisar que la PC esté encendida, con sesión y que la tarea programada esté corriendo.` })
+        titulo: carga?.n ? `${n} no reporta y tiene ${carga.n} pendiente(s)` : `${n} no reporta desde las ${horaGT(s.last_seen)}`,
+        detalle: `${carga?.n ? carga.detalle + '. ' : ''}PC ${s.pc}, último reporte ${horaGT(s.last_seen)} (debería cada ${Math.round((s.intervalo_seg || 180) / 60)} min). Revisar que la PC esté encendida, con sesión y que la tarea programada esté corriendo.` })
+    }
     else if (s.estado === 'error')
       out.push({ clave: `error:${s.robot}|${s.pc}`, robot: s.robot, pc: s.pc, centro: s.centro, severidad: 'alta',
         titulo: `${n} terminó con error`, detalle: corto(s.ultimo_error || s.detalle, 500) })
@@ -201,7 +208,7 @@ async function revisarCshp() {
   if (porRevisar.length) {
     let cshp = null
     try {
-      cshp = await abrirCSHP(CSHP)
+      cshp = await sesionCSHP()
       for (const n of porRevisar) {
         try {
           const l = await leerLlamada(cshp, n), d = debeLogistica(l)
@@ -218,7 +225,7 @@ async function revisarCshp() {
         cshpCaido = { detalle: corto(e) }
         out.push({ clave: 'cshp:caido', robot: 'jefe', severidad: 'alta', titulo: 'El Jefe no pudo entrar a CSHP', detalle: corto(e, 300) })
       }
-    } finally { await cerrarCSHP(cshp) }
+    }
     if (PROD) writeFileSync(AUD, JSON.stringify(aud, null, 1))
   }
   // hallazgos de todas las que siguen en alerta (se cierran cuando una nueva revisión sale bien)
@@ -237,7 +244,37 @@ async function revisarCshp() {
   return out
 }
 
-const REVISIONES = { cshp: revisarCshp, robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores, sku: revisarSku }
+async function revisarCarga() {
+  const intenta = async (robot, fn) => { try { CARGA[robot] = await fn() } catch (e) { CARGA[robot] = { n: null, detalle: `No se pudo revisar: ${corto(e, 150)}` } } }
+  await intenta('citas', async () => {
+    const r = await q(KK, 'cita_equipos?select=orden,citas!inner(numero)&sync_status=eq.listo&external_id=is.null&limit=200')
+    return { n: r.length, detalle: r.length ? `${r.length} equipo(s) de cita listos para crear llamada` : 'Sin citas por procesar' }
+  })
+  await intenta('correos', async () => {
+    const r = await q(CC, 'correos_cola?select=id&estado=in.(pendiente,enviando)&limit=500')
+    return { n: r.length, detalle: r.length ? `${r.length} correo(s) en cola` : 'Sin correos en cola' }
+  })
+  await intenta('digitadores', async () => {
+    const cfg = await q(CC, 'etiquetera_config?select=valor&clave=eq.robot_garantia_activo')
+    if (cfg?.[0]?.valor !== true) return { n: 0, detalle: 'Robot apagado en Administración' }
+    const est = await q(CC, 'llamadas_estados?select=id,nombre'), gar = est.find((e) => /^garant[ií]a$/i.test(e.nombre.trim()))
+    if (!gar) return { n: null, detalle: 'No existe el estado Garantía' }
+    const r = await q(CC, `llamadas_actualizaciones?select=num_llamada&estado_id=eq.${gar.id}&digitado_en=is.null&garantia_id=is.null&pendiente_en=is.null&limit=200`)
+    return { n: r.length, detalle: r.length ? `${r.length} llamada(s) de Garantía en la Bandeja` : 'Sin Garantías en la Bandeja' }
+  })
+  await intenta('guias', async () => {
+    if (minEnHorario('guias') === null) return { n: null, detalle: 'Fuera de horario: no se revisó CSHP' }
+    if (cshpCaido) return { n: null, detalle: 'CSHP no responde: no se pudo revisar' }
+    const lista = await pendientesGuias(await sesionCSHP(), { centro: E.GUIAS_CENTRO || 'HPCS016', status: E.GUIAS_STATUS || '106' })
+    return { n: lista.length, detalle: lista.length ? `${lista.length} LLS en 106 por imprimir: ${lista.slice(0, 5).join(', ')}` : 'Sin LLS en 106 por imprimir' }
+  })
+  Object.entries(CARGA).forEach(([r, c]) => log(`CARGA ${r}: ${c.n ?? '?'} · ${c.detalle}`))
+  if (PROD) await q(KK, 'robot_carga?on_conflict=robot', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
+    body: Object.entries(CARGA).map(([robot, c]) => ({ robot, pendientes: c.n, detalle: c.detalle, revisado_en: new Date().toISOString() })) })
+  return []
+}
+
+const REVISIONES = { cshp: revisarCshp, carga: revisarCarga, robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores, sku: revisarSku }
 
 /* =============== Hallazgos: abrir / actualizar / cerrar =============== */
 async function avisar(h, abierto) {
@@ -311,4 +348,4 @@ async function main() {
 
 main()
   .catch((e) => { log(`ERROR ${corto(e)}`); mon.error(e); process.exitCode = 1 })
-  .finally(() => mon.flush())
+  .finally(async () => { await cerrarCSHP(sesion); await mon.flush() })

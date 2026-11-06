@@ -130,6 +130,8 @@ const LS = [1, 2, 3, 4, 5, 6]; // lunes a sábado
 const ROBOTS = [
   /* El Jefe: revisa a los demás (jefe/revisar.mjs). global = su oficina sale en todos los niveles */
   { id: 'jefe',        nombre: 'Jefe',        sala: 'jefatura',   global: true,     color: '#f59e0b', horario: { dias: LS, desde: '06:00', hasta: '21:00' } },
+  /* Cafetería: sala de espera. Los robots sin pendientes caminan hasta aquí y vuelven cuando les llega trabajo */
+  { id: 'cafeteria',   nombre: 'Cafetería',   sala: 'cafeteria',  global: true,     color: '#a16207' },
   { id: 'citas',       nombre: 'Citas',       sala: 'recepcion',  centro: 'Zona 4', color: '#f5c542', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
   /* Guías puede correr en varios centros: cada PC pone ROBOT_CENTRO en su .env (ver monitor/03_centros.sql); sin eso = Nodus */
   { id: 'guias',       nombre: 'Guías',       sala: 'logistica',  centro: 'Nodus',  color: '#60a5fa', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
@@ -161,6 +163,7 @@ const ESTADOS = {
   error:      { txt: 'ERROR',      c: 'var(--err)'  },
   caido:      { txt: 'CAÍDO',      c: 'var(--dead)' },
   sindatos:   { txt: 'SIN DATOS',  c: 'var(--dead)' },
+  libre:      { txt: 'LIBRE',      c: '#38bdf8'     },
 };
 const DEMO = !SUPABASE_URL || !SUPABASE_ANON_KEY || new URLSearchParams(location.search).has('demo');
 const status = new Map();    // robot|pc -> fila
@@ -168,6 +171,43 @@ const resumen = new Map();   // robot|pc -> {ok_hoy, errores_hoy}
 const areaStats = new Map(); // robot|pc|area -> {ok, err, reint, ultimo}
 const ultimoOk = new Map();  // robot|pc -> fecha del último OK (para animar "recién terminado")
 let eventos = [];
+const carga = new Map();     // robot -> { pendientes, detalle, revisado_en }  (lo calcula el Jefe)
+const ubic = new Map();      // robot|pc -> { lugar: 'cuarto' | 'cafe', viajando }
+const KEY_CAFE = 'cafeteria|—';
+/* ¿El robot no tiene trabajo? Primero lo que contó el Jefe (pendientes reales); si no, lo que reportó el robot */
+function sinTrabajo(k) {
+  const [id] = k.split('|'), m = meta(id); if (m.global) return false;
+  const s = status.get(k), e = estadoEfectivo(s, id);
+  if (e === 'trabajando' || e === 'error') return false;
+  const c = carga.get(id), fresca = c && c.pendientes !== null && Date.now() - new Date(c.revisado_en).getTime() < 20 * 60000;
+  if (fresca) return c.pendientes === 0;
+  if (e === 'durmiendo') return true;
+  if (e === 'esperando') return /\bsin |corrida sin|todo en orden|apagado/i.test(s?.detalle || '');
+  return false;
+}
+/* Estado para mostrar: un robot que no reporta pero no tiene pendientes está LIBRE, no caído */
+function estadoVista(k) {
+  const [id] = k.split('|'), e = estadoEfectivo(status.get(k), id);
+  return (e === 'caido' || e === 'sindatos') && sinTrabajo(k) ? 'libre' : e;
+}
+const enCafe = k => { const u = ubic.get(k); return !!u && (u.lugar === 'cafe' || u.viajando); };
+/* Cada robot va y viene caminando por los corredores entre su cuarto y la cafetería */
+function actualizarUbicaciones() {
+  if (!cuartos.has(KEY_CAFE)) return;
+  cuartos.forEach((q, k) => {
+    if (meta(k.split('|')[0]).global) return;
+    const quiere = sinTrabajo(k) ? 'cafe' : 'cuarto';
+    const u = ubic.get(k);
+    if (!u) { ubic.set(k, { lugar: quiere, viajando: false }); return; }
+    if (u.viajando || u.lugar === quiere) return;
+    const ruta = quiere === 'cafe' ? caminoEntre(k, KEY_CAFE) : caminoEntre(KEY_CAFE, k);
+    if (!ruta) { u.lugar = quiere; return; }
+    let largo = 0; for (let i = 1; i < ruta.length; i++) largo += Math.hypot(ruta[i][0] - ruta[i - 1][0], ruta[i][1] - ruta[i - 1][1]);
+    u.viajando = true;
+    viajes.push({ ruta, largo, t0: performance.now(), dur: Math.max(3000, largo / 45 * 1000), color: meta(k.split('|')[0]).color, carga: quiere === 'cafe' ? null : 'papel', llamada: null,
+      fin: () => { u.lugar = quiere; u.viajando = false; } });
+  });
+}
 let hallazgos = [];          // jefe_hallazgos abiertos
 const viajes = [];           // mensajeros caminando por los corredores
 const aviones = [];          // correos enviados (avioncitos de papel)
@@ -203,6 +243,7 @@ function minEnHorario(id) {
   return h.dias.includes(dia) && min >= aMin(h.desde) && min <= aMin(h.hasta) ? min - aMin(h.desde) : null;
 }
 function estadoEfectivo(s, id) {
+  if (meta(id || s?.robot).sala === 'cafeteria') return 'esperando';
   const m = minEnHorario(id || s?.robot);
   if (!s) return m === null ? 'durmiendo' : 'sindatos';
   const limite = (s.intervalo_seg || 180) * 2 + GRACIA_SEG;
@@ -277,7 +318,7 @@ function elegirNivel(n) {
 }
 function renderNiveles() {
   const ks = todasLasKeys(), por = {};
-  ks.filter(k => !esGlobal(k)).forEach(k => (por[centroDe(k)] ||= []).push(estadoEfectivo(status.get(k), k.split('|')[0])));
+  ks.filter(k => !esGlobal(k)).forEach(k => (por[centroDe(k)] ||= []).push(estadoVista(k)));
   const luces = l => `<span class="luces">${(l || []).map(e => `<i style="background:${ESTADOS[e].c}"></i>`).join('')}</span>`;
   const chip = (id, nombre, l) => l?.length
     ? `<button class="nivel ${nivel === id ? 'activo' : ''}" data-n="${esc(id)}">${esc(nombre)} ${luces(l)}</button>`
@@ -303,7 +344,7 @@ function layout() {
     return { celdas: celdas.map(x => ({ ...x, c: x.c - c0, r: x.r - r0 })), cols: cs, rows: rs, w, h, esc: Math.min(cw / w, ch / h) };
   };
   const opciones = [];
-  const jk = keys.find(esGlobal), otros = keys.filter(k => k !== jk);
+  const jk = keys.find(k => k.startsWith('jefe|')), otros = keys.filter(k => k !== jk).sort((a, b) => (a === KEY_CAFE) - (b === KEY_CAFE));
   if (jk && otros.length <= 8 && cw >= 560) {
     // Jefe al centro (fila 1, columna 1); alrededor: primero los lados, luego las esquinas
     const H = [[1, 0], [1, 2], [0, 1], [2, 1], [0, 0], [0, 2], [2, 0], [2, 2]];   // izq, der, arriba, abajo...
@@ -391,6 +432,7 @@ function robot(x, y, col, { pose = 'pie', carga = null, t = 0, est = 'esperando'
     px(x - 6, by + 3, 2, 4, '#9ca3af'); px(x + 6, by + 3, 2, 4, '#9ca3af');
     if (carga === 'papel') { px(x - 4, by + 5, 10, 6, '#f9fafb'); px(x - 3, by + 7, 7, 1, '#9ca3af'); px(x - 3, by + 9, 5, 1, '#9ca3af'); }
     if (carga === 'tarjeta') { px(x - 3, by + 5, 8, 5, '#fde68a'); px(x - 2, by + 6, 5, 1, '#b45309'); }
+    if (carga === 'cafe') { const s = Math.floor(t / 900) % 3 === 0; px(x + 5, by + (s ? -3 : 3), 4, 4, '#f5f5f4'); px(x + 9, by + (s ? -2 : 4), 1, 2, '#f5f5f4'); px(x + 6, by + (s ? -3 : 3), 2, 1, '#78350f'); }
     if (carga === 'caja') { px(x - 4, by + 4, 10, 8, '#b45309'); px(x - 4, by + 4, 10, 1, '#d97706'); px(x, by + 4, 2, 8, '#fde68a'); }
     if (carga === 'sobre') { px(x - 4, by + 5, 10, 6, '#f9fafb'); px(x - 4, by + 5, 10, 1, '#f472b6'); px(x, by + 7, 2, 1, '#f472b6'); }
   } else {
@@ -461,13 +503,13 @@ function dibujarInteracciones(t) {
   const ahora = performance.now();
   for (let i = viajes.length - 1; i >= 0; i--) {
     const v = viajes[i], p = (ahora - v.t0) / v.dur;
-    if (p >= 1) { viajes.splice(i, 1); continue; }
+    if (p >= 1) { viajes.splice(i, 1); v.fin?.(); continue; }
     let d = p * v.largo, j = 1;
     while (j < v.ruta.length - 1 && d > Math.hypot(v.ruta[j][0] - v.ruta[j - 1][0], v.ruta[j][1] - v.ruta[j - 1][1])) { d -= Math.hypot(v.ruta[j][0] - v.ruta[j - 1][0], v.ruta[j][1] - v.ruta[j - 1][1]); j++; }
     const [x0, y0] = v.ruta[j - 1], [x1, y1] = v.ruta[j], seg = Math.hypot(x1 - x0, y1 - y0) || 1, f = Math.min(1, d / seg);
     const x = x0 + (x1 - x0) * f, y = y0 + (y1 - y0) * f - 14;
-    robot(x, y, v.color, { pose: 'camina', carga: v.carga || 'caja', t, est: 'trabajando', mira: Math.sign(x1 - x0) || 1 });
-    globo(x + 1, y - 18, String(v.llamada).slice(-12), '#fde68a', '#111', false);
+    robot(x, y, v.color, { pose: 'camina', carga: v.carga === undefined ? 'caja' : v.carga, t, est: 'trabajando', mira: Math.sign(x1 - x0) || 1 });
+    if (v.llamada) globo(x + 1, y - 18, String(v.llamada).slice(-12), '#fde68a', '#111', false);
   }
   for (let i = aviones.length - 1; i >= 0; i--) {
     const a = aviones[i], p = (ahora - a.t0) / 2600;
@@ -590,7 +632,7 @@ function salaDigitacion(q, s, est, t, col, areas) {
   const activa = est === 'trabajando' || est === 'error' ? areaDe(q.k.split('|')[0], s?.detalle + ' ' + (s?.ultimo_error || '')) : null;
   const recien = ultimoOk.get(q.k) && Date.now() - new Date(ultimoOk.get(q.k)).getTime() < 15000;
   areas.forEach((a, i) => {
-    const cx = Math.round(8 + ancho * i + ancho / 2), dim = !['trabajando', 'esperando', 'error'].includes(est);
+    const cx = Math.round(8 + ancho * i + ancho / 2), dim = !['trabajando', 'esperando', 'error', 'ausente'].includes(est);
     const st = areaStats.get(`${q.k}|${a.id}`) || {};
     const esta = activa === a;
     letrero(cx - 26, 30, 52, a.rotulo, a.color, dim);
@@ -598,7 +640,7 @@ function salaDigitacion(q, s, est, t, col, areas) {
     px(cx - 9, 56, 3, 22, '#3f3f46'); px(cx - 9, 76, 14, 3, '#3f3f46');
     // robot sentado detrás del escritorio
     const pose = est === 'trabajando' && esta ? 'teclea' : ['durmiendo', 'esperando'].includes(est) ? 'dormido' : 'sentado';
-    if (!['caido', 'sindatos'].includes(est)) robot(cx - 2, 64 + (pose === 'teclea' ? (Math.floor(t / 180) % 2) : 0), col, { pose, t: t + i * 400, est: esta ? est : 'esperando' });
+    if (!['caido', 'sindatos', 'ausente'].includes(est)) robot(cx - 2, 64 + (pose === 'teclea' ? (Math.floor(t / 180) % 2) : 0), col, { pose, t: t + i * 400, est: esta ? est : 'esperando' });
     // escritorio al frente, monitor de lado y teclado
     px(cx - 22, 76, 50, 5, '#7c5a3a'); px(cx - 22, 76, 50, 1, '#9a7350'); px(cx - 22, 81, 50, 18, '#5c4128'); px(cx - 20, 83, 46, 1, '#4a3420');
     compu(cx + 8, 60, est, t, esta);
@@ -649,7 +691,7 @@ function salaCorreo(q, s, est, t, col, areas) {
   const n = areas.length, xV = a => Math.round(RW * (areas.indexOf(a) + 1) / (n + 1));
   const activa = est === 'trabajando' ? areaDe('correos', s?.detalle) : null;
   const conError = est === 'error' ? areaDe('correos', s?.ultimo_error) : null;
-  const dim = !['trabajando', 'esperando', 'error'].includes(est);
+  const dim = !['trabajando', 'esperando', 'error', 'ausente'].includes(est);
   areas.forEach(a => {
     const cx = xV(a), x0 = cx - 22, st = areaStats.get(`${q.k}|${a.id}`) || {};
     const reciente = st.ultimo && Date.now() - new Date(st.ultimo).getTime() < 3 * 60000;
@@ -809,6 +851,10 @@ function frasesVivas() {
   });
   if (total) out.push(`${total} TRABAJOS HOY`);
   if (hallazgos.length === 0) out.push('CERO ALERTAS');
+  [...ubic.entries()].filter(([, u]) => u.lugar === 'cafe' && !u.viajando).forEach(([k]) => {
+    const n = meta(k.split('|')[0]).nombre.toUpperCase(); out.push(`${n} SIN PENDIENTES`, `${n} EN LA CAFETERÍA`);
+  });
+  if ([...ubic.values()].some(u => u.lugar === 'cafe')) out.push('SIN PENDIENTES, ESTÁ BIEN', 'QUE DESCANSEN… UN RATO');
   return out;
 }
 /* Elige una frase distinta en cada aparición (no repite la anterior) */
@@ -966,10 +1012,54 @@ function salaGenerica(q, s, est, t) {
   return { x: 90, y: 78, accion: est === 'trabajando' ? 'teclear' : 'pie', f: 0 };
 }
 
+/* ---------- Cafetería ---------- */
+const FR_CAFE = ['SIN PENDIENTES', '¿OTRO CAFÉ?', 'DESCANSO MERECIDO', 'TODO AL DÍA', '¡TE TOCA!', 'PASO…', '¿Y SI LLEGA ALGO?', 'AQUÍ ESPERANDO',
+  '¿Y EL JEFE?', 'CERO PENDIENTES', '¿VISTE EL PARTIDO?', 'YA TERMINÉ LO MÍO', 'AVÍSENME SI HAY ALGO', '¡UNO!', 'ESTE CAFÉ ESTÁ BUENO'];
+function salaCafeteria(q, t) {
+  const C = RW / 2;
+  // pizarra de menú, reloj y tele
+  px(14, 28, 34, 22, '#1f2937'); px(14, 28, 34, 2, '#a16207'); texto('MENÚ', 31, 36, 4, '#fde68a', true); px(18, 40, 20, 1, '#9ca3af'); px(18, 43, 24, 1, '#9ca3af'); px(18, 46, 16, 1, '#9ca3af');
+  px(60, 28, 12, 12, '#f5f5f4'); px(65, 30, 1, 5, '#111'); px(65, 34, 4, 1, '#111');                       // reloj
+  px(84, 28, 40, 24, '#111827'); px(86, 30, 36, 20, '#1e3a8a');                                            // tele
+  const off = (t / 60) % 60; texto('SIN PENDIENTES · TODO AL DÍA · ', 122 - off, 42, 4, '#93c5fd'); px(84, 28, 2, 24, '#111827'); px(122, 28, 2, 24, '#111827');
+  // máquina de café y de bocadillos
+  px(146, 40, 18, 36, '#57534e'); px(148, 44, 14, 8, '#1f2937'); px(151, 46, 8, 3, Math.floor(t / 500) % 2 ? '#22c55e' : '#14532d'); px(152, 60, 6, 6, '#a8a29e'); px(154, 66, 2, 3, '#78350f');
+  for (let i = 0; i < 3; i++) { const p = ((t / 700) + i / 3) % 1; ctx.globalAlpha = 1 - p; px(153 + Math.sin(p * 6) * 2, 58 - p * 10, 2, 2, '#e5e7eb'); ctx.globalAlpha = 1; }
+  px(166, 36, 14, 40, '#991b1b'); for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) px(168 + j * 6, 40 + i * 8, 4, 6, ['#facc15', '#22c55e', '#38bdf8'][(i + j) % 3]);
+  // sofá
+  px(10, 84, 54, 8, '#7c3aed'); px(10, 78, 54, 7, '#6d28d9'); px(8, 78, 4, 16, '#5b21b6'); px(62, 78, 4, 16, '#5b21b6'); px(12, 92, 3, 4, '#3f3f46'); px(59, 92, 3, 4, '#3f3f46');
+  // mesa redonda con cartas
+  px(C - 14, 92, 28, 4, '#a16207'); px(C - 12, 92, 24, 1, '#ca8a04'); px(C - 1, 96, 3, 12, '#78350f'); px(C - 7, 107, 15, 2, '#78350f');
+  const turno = Math.floor(t / 900) % 2;
+  px(C - 8, 89, 4, 3, '#f9fafb'); px(C + 4, 89, 4, 3, turno ? '#f9fafb' : '#ef4444'); px(C - 2, 88 - turno, 4, 3, '#f9fafb');
+  px(16, 104, 8, 10, '#78350f'); px(13, 96, 14, 9, '#16a34a');                                            // planta
+  // quiénes están
+  const aqui = [...ubic.entries()].filter(([k, u]) => u.lugar === 'cafe' && !u.viajando && cuartos.has(k)).map(([k]) => k);
+  if (!aqui.length) { texto('NADIE DESCANSANDO', C, 116, 4, '#78716c', true); return null; }
+  const dormidos = aqui.filter(k => { const e = estadoEfectivo(status.get(k), k.split('|')[0]); return e === 'durmiendo' || e === 'caido' || e === 'sindatos'; });
+  const despiertos = aqui.filter(k => !dormidos.includes(k));
+  const SOFA = [[24, 82], [44, 82], [34, 82]], MESA = [[C - 20, 86, 'sentado'], [C + 20, 86, 'sentado'], [150, 82, 'pie'], [C, 114, 'pie'], [126, 104, 'pie']];
+  const habla = despiertos.length ? despiertos[Math.floor(t / 5000) % despiertos.length] : null;
+  dormidos.forEach((k, i) => {
+    const [x, y] = SOFA[i % SOFA.length], m = meta(k.split('|')[0]);
+    robot(x, y, m.color, { pose: 'dormido', t: t + i * 700, est: 'esperando' }); zzz(x + 6, y - 14, t + i * 400, '196,181,253');
+    texto(m.nombre.toUpperCase(), x, 101, 3, m.color, true);
+  });
+  despiertos.forEach((k, i) => {
+    const [x, y, pose] = MESA[i % MESA.length], m = meta(k.split('|')[0]);
+    if (pose === 'sentado') { px(x - 6, y - 4, 2, 18, '#57534e'); px(x - 6, y + 12, 12, 2, '#57534e'); }
+    robot(x, y + (pose === 'sentado' ? Math.floor((t + i * 300) / 1200) % 2 : 0), m.color, { pose, carga: 'cafe', t: t + i * 500, est: 'esperando', mira: x < C ? 1 : -1 });
+    texto(m.nombre.toUpperCase(), x, y + 22, 3, m.color, true);
+    if (k === habla && (t % 5000) < 2600) globo(x, y - 18, FR_CAFE[Math.floor(t / 5000 + i) % FR_CAFE.length], '#fef3c7', '#111');
+  });
+  return null;
+}
+
 /* ---------- Un cuarto completo ---------- */
 function dibujarCuarto(q, t) {
   const [id] = q.k.split('|'), m = meta(id), s = status.get(q.k);
-  const est = estadoEfectivo(s, id), dim = !['trabajando', 'esperando', 'error'].includes(est);
+  const fuera = !m.global && enCafe(q.k);
+  const est = fuera ? 'ausente' : estadoEfectivo(s, id), dim = !['trabajando', 'esperando', 'error', 'ausente'].includes(est);
   ctx.save(); ctx.translate(q.x, q.y); ctx.beginPath(); ctx.rect(0, 0, RW, RH); ctx.clip();
   const cen = centroDe(q.k);
   cuartoBase(q, (nivel === 'todos' && cen !== COMUN && !m.global ? `${m.nombre} · ${cen}` : m.nombre).toUpperCase(), m.color, dim, t);
@@ -979,8 +1069,14 @@ function dibujarCuarto(q, t) {
   else if (m.sala === 'recepcion') r = salaRecepcion(q, s, est, t, m.color);
   else if (m.sala === 'correo' && m.areas) r = salaCorreo(q, s, est, t, m.color, m.areas);
   else if (m.sala === 'jefatura') r = salaJefatura(q, s, est, t);
+  else if (m.sala === 'cafeteria') r = salaCafeteria(q, t);
   else r = salaGenerica(q, s, est, t);
 
+  if (fuera) {   // letrero: se fue a la cafetería
+    px(RW - 52, 30, 30, 14, '#fef3c7'); px(RW - 52, 30, 30, 2, '#a16207'); px(RW - 38, 27, 2, 3, '#9ca3af');
+    texto('EN LA', RW - 37, 37, 3, '#78350f', true); texto('CAFETERÍA', RW - 37, 42, 3, '#78350f', true);
+    r = null;
+  }
   if (r) {   // robot de pie (las salas sentadas lo dibujan ellas)
     if (est === 'trabajando') {
       const pose = r.accion === 'camina' ? 'camina' : r.accion === 'teclear' ? 'teclea' : 'pie';
@@ -1002,7 +1098,7 @@ function dibujarCuarto(q, t) {
       px(gx + 2, gy + 3, 1, 2, '#111'); px(gx + 5, gy + 3, 1, 2, '#111'); ctx.globalAlpha = 1;
     }
   }
-  if (!m.global) avisoDelJefe(q, t); else campanaJefe(t);
+  if (!m.global) avisoDelJefe(q, t); else if (m.sala === 'jefatura') campanaJefe(t);
   if (festejos.has(q.k) && !confeti(festejos.get(q.k), t)) festejos.delete(q.k);
   // capas de estado
   if (est === 'caido' || est === 'sindatos') { ctx.fillStyle = 'rgba(5,4,8,.55)'; ctx.fillRect(0, 0, RW, RH); }
@@ -1019,6 +1115,7 @@ function loop(t) {
   ctx.setTransform(S, 0, 0, S, 0, 0); ctx.imageSmoothingEnabled = false;
   if (fondo) ctx.drawImage(fondo, 0, 0, MW, MH);
   dibujarAntorchas(t);
+  actualizarUbicaciones();
   jefeVa = destinoJefe(t);
   cuartos.forEach(q => dibujarCuarto(q, t));
   dibujarInteracciones(t);
@@ -1034,7 +1131,7 @@ const cuartoEn = e => {
 };
 function cerrarTip() { tip.hidden = true; tipCuarto = null; clearTimeout(tipTimer); }
 function abrirTip(q, e) {
-  const [id, pc] = q.k.split('|'), m = meta(id), s = status.get(q.k), e2 = estadoEfectivo(s, id);
+  const [id, pc] = q.k.split('|'), m = meta(id), s = status.get(q.k), e2 = estadoVista(q.k);
   const evs = eventos.filter(ev => ev.robot === id && (pc === '—' || ev.pc === pc)).slice(0, 6);
   const hs = m.global ? hallazgos : hallazgosDe(q.k);
   const enCola = id === 'guias' ? [...flujo.entries()].filter(([, f]) => f.a === 'guias' && !f.impresa).map(([L]) => L) : [];
@@ -1064,15 +1161,22 @@ const prevEst = new Map();
 function renderCards() {
   const cont = document.getElementById('cards');
   renderNiveles();
-  const cnt = { trabajando: 0, esperando: 0, error: 0, caido: 0, sindatos: 0, durmiendo: 0 };
+  const cnt = { trabajando: 0, esperando: 0, error: 0, caido: 0, sindatos: 0, durmiendo: 0, libre: 0 };
   cont.innerHTML = [...cuartos.keys()].map(k => {
-    const [id, pc] = k.split('|'), s = status.get(k), e = estadoEfectivo(s, id); cnt[e]++;
-    const m = meta(id), rs = resumen.get(k) || { ok_hoy: 0, errores_hoy: 0 };
+    const [id, pc] = k.split('|'), s = status.get(k), e = estadoVista(k), m = meta(id);
+    if (m.sala === 'cafeteria') {
+      const aqui = [...ubic.entries()].filter(([kk, u]) => u.lugar === 'cafe' && !u.viajando && cuartos.has(kk)).map(([kk]) => meta(kk.split('|')[0]).nombre);
+      return `<article class="card" data-k="${esc(k)}"><div class="row"><span class="name" style="color:${m.color}">Cafetería</span><span class="badge" style="background:#38bdf8">${aqui.length} DESCANSANDO</span></div>
+        <div class="det">${aqui.length ? 'Sin pendientes: ' + esc(aqui.join(', ')) : 'Todos trabajando'}</div></article>`;
+    }
+    if (!m.global || m.sala === 'jefatura') cnt[e]++;
+    const rs = resumen.get(k) || { ok_hoy: 0, errores_hoy: 0 }, cg = carga.get(id);
     const p = prevEst.get(k); if (p && p !== e && (e === 'error' || e === 'caido')) sonar(e); prevEst.set(k, e);
     const det = e === 'caido' ? `Sin reportar desde ${s ? hhmm(s.last_seen) : '—'} (esperado cada ${Math.round((s?.intervalo_seg || 180) / 60)} min)`
+      : e === 'libre' ? `Sin pendientes${cg?.detalle ? ' (' + cg.detalle + ')' : ''} · descansando en la cafetería`
       : e === 'sindatos' ? 'Aún no reporta al monitor'
       : e === 'durmiendo' ? `Fuera de horario (${m.horario.desde}–${m.horario.hasta})${s ? ' · última: ' + (s.detalle || '') : ''}`
-      : (s?.detalle || '') + (s?.llamada ? (m.sala === 'correo' ? ' · Ref. ' : ' · Llamada ') + s.llamada : '');
+      : (s?.detalle || '') + (s?.llamada ? (m.sala === 'correo' ? ' · Ref. ' : ' · Llamada ') + s.llamada : '') + (enCafe(k) ? ' · en la cafetería' : '') + (cg && cg.pendientes > 0 && e !== 'trabajando' ? ` · ${cg.pendientes} pendiente(s)` : '');
     return `<article class="card ${e}" data-k="${esc(k)}">
       <div class="row"><span class="name" style="color:${m.color}">${esc(m.nombre)}</span><span class="badge" style="background:${ESTADOS[e].c}">${ESTADOS[e].txt}</span></div>
       <div class="row meta"><span>${esc(m.global ? 'Todos los centros' : centroDe(k))} · PC: ${esc(pc)}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
@@ -1089,7 +1193,7 @@ function renderCards() {
     </article>`;
   }).join('');
   document.getElementById('kpis').innerHTML = [
-    ['trabajando', cnt.trabajando], ['esperando', cnt.esperando], ['durmiendo', cnt.durmiendo], ['error', cnt.error], ['caido', cnt.caido], ['sindatos', cnt.sindatos],
+    ['trabajando', cnt.trabajando], ['esperando', cnt.esperando], ['libre', cnt.libre], ['durmiendo', cnt.durmiendo], ['error', cnt.error], ['caido', cnt.caido], ['sindatos', cnt.sindatos],
   ].filter(([e, n]) => n || ['trabajando', 'error', 'caido'].includes(e))
    .map(([e, n]) => `<div class="kpi"><span class="dot" style="background:${ESTADOS[e].c}"></span>${ESTADOS[e].txt} ${n}</div>`).join('')
    + (hallazgos.length ? `<div class="kpi" style="border-color:#f59e0b"><span class="dot" style="background:#f59e0b"></span>JEFE: ${hallazgos.length} ALERTA${hallazgos.length > 1 ? 'S' : ''}</div>` : '');
@@ -1170,8 +1274,12 @@ async function initSupabase() {
       if (e.created_at >= ini && (e.tipo === 'ok' || conAreas.includes(e.robot))) contarEvento(e);
       else if (e.tipo === 'ok' && e.llamada) contarEvento({ ...e, robot: e.robot, mensaje: e.mensaje, _soloFlujo: true });
     });
-    await cargarHallazgos();
+    await cargarHallazgos(); await cargarCarga();
     ultimaFirma = ''; quizasLayout(); renderCards(); renderLog();
+  };
+  const cargarCarga = async () => {
+    const { data, error } = await sb.from('robot_carga').select('*');
+    if (!error) { carga.clear(); (data || []).forEach(c => carga.set(c.robot, c)); }
   };
   const cargarHallazgos = async () => {
     const { data, error } = await sb.from('jefe_hallazgos').select('*').is('cerrado_en', null).order('abierto_en');
@@ -1191,12 +1299,13 @@ async function initSupabase() {
       eventos.unshift(p.new); eventos = eventos.slice(0, 100); contarEvento(p.new, true);
       if (p.new.robot === 'jefe' && p.new.tipo === 'ok' && /^Orden/i.test(p.new.mensaje || '')) {   // el Jefe dio una orden
         reaccionar('orden', 'A DIGITADORES');
-        const kj = [...cuartos.keys()].find(esGlobal);
+        const kj = [...cuartos.keys()].find(k => k.startsWith('jefe|'));
         if (kj) setTimeout(() => mandarMensajero(kj, 'digitadores', p.new.llamada || 'ORDEN', '#f59e0b', 'papel'), 1800);
       }
       if (p.new.tipo === 'ok') sonar('ok'); if (p.new.tipo === 'error') sonar('error');
       renderLog(); recargarResumen();
     })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'robot_carga' }, async () => { await cargarCarga(); renderCards(); })
     .on('postgres_changes', { event: '*', schema: 'public', table: 'jefe_hallazgos' }, async p => {
       if (p.eventType === 'INSERT') { campana = performance.now(); reaccionar('nuevo'); if (p.new?.severidad === 'alta') sonar('error'); }
       if (p.eventType === 'UPDATE' && p.new?.cerrado_en) {

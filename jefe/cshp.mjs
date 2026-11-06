@@ -93,3 +93,27 @@ export async function cshpResponde(base) {
     return { ok: r.ok, ms: Date.now() - t0, detalle: r.ok ? '' : `HTTP ${r.status}` }
   } catch (e) { return { ok: false, ms: Date.now() - t0, detalle: String(e.cause?.code || e.message) } }
 }
+
+/** Llamadas que Guías tiene por imprimir: lista de CSHP filtrada por centro y status (solo lectura) */
+export async function pendientesGuias(cshp, { centro = 'HPCS016', status = '106', filtro = 'LLS' } = {}) {
+  const { page, base } = cshp
+  await page.goto(`${base}/LLamadasServ.aspx`, { waitUntil: 'domcontentloaded' })
+  if (/Login|BloqSeguridad/i.test(page.url())) { await login(cshp); await page.goto(`${base}/LLamadasServ.aspx`, { waitUntil: 'domcontentloaded' }) }
+  await esperar(page)
+  const elegir = async (sel, buscado) => {
+    const combo = page.locator(sel); await combo.waitFor({ state: 'visible', timeout: 15_000 })
+    const ops = await combo.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, t: (o.textContent || '').trim() })))
+    const b = buscado.toLowerCase()
+    const op = ops.find((o) => o.v.toLowerCase() === b) || ops.find((o) => o.t.toLowerCase() === b) || ops.find((o) => o.v && (o.t.toLowerCase().includes(b) || o.v.toLowerCase().includes(b)))
+    if (!op) throw new Error(`No existe "${buscado}" en ${sel}`)
+    await combo.selectOption(op.v); await esperar(page)
+  }
+  await elegir('#FrmLLamadasServ_CmbFCentro', centro)
+  await elegir('#FrmLLamadasServ_CmbFStatus', status)
+  await page.locator('#FrmLLamadasServ_TxtFLlamada').fill(filtro)
+  await page.locator('#FrmLLamadasServ_CmdBuscar').click({ timeout: 5_000 }).catch(() => page.evaluate(() => document.querySelector('#FrmLLamadasServ_CmdBuscar')?.click()))
+  await esperar(page)
+  await page.waitForTimeout(1_500)
+  const textos = await page.getByRole('link', { name: /^LLS\d+-\d+$/i }).allTextContents()
+  return [...new Set(textos.map((t) => t.trim().toUpperCase()))]
+}
