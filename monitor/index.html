@@ -893,6 +893,117 @@ function caminarJefe(tx, ty, ahora) {
   return Math.hypot(tx - JEFE.x, ty - JEFE.y) < 1.5;
 }
 
+/* ---------- El Jefe sale a investigar ----------
+   Señala la alerta un par de minutos; luego camina por los corredores hasta ese cuarto, investiga con su lupa,
+   dice la causa que encontró, regresa a su oficina y la informa. No repite la misma alerta salvo que cambie
+   la investigación (investigado_en) o pasen 20 min. */
+const SEÑALAR_MS = 120000, INVESTIGAR_MS = 16000, INFORMAR_MS = 12000, REVISITA_MS = 20 * 60000, VEL_JEFE = 44;
+const INV = { fase: null };            // fase: salir → ida → investigar → vuelta → informar
+const visitas = new Map();             // clave del hallazgo → { marca, en }
+let señalandoDesde = 0;
+const marcaH = h => h.investigado_en || h.abierto_en;
+const FR_INV = ['REVISANDO EL LOG…', '¿QUÉ PASÓ AQUÍ?', 'BUSCANDO LA CAUSA', 'LEYENDO LOS ERRORES', 'COMPARANDO CON LO QUE SÉ'];
+const largoRuta = r => r.slice(1).reduce((a, p, i) => a + Math.hypot(p[0] - r[i][0], p[1] - r[i][1]), 0);
+function puntoRuta(r, d) {
+  for (let i = 1; i < r.length; i++) {
+    const seg = Math.hypot(r[i][0] - r[i - 1][0], r[i][1] - r[i - 1][1]);
+    if (d <= seg || i === r.length - 1) { const f = seg ? Math.min(1, d / seg) : 1; return [r[i - 1][0] + (r[i][0] - r[i - 1][0]) * f, r[i - 1][1] + (r[i][1] - r[i - 1][1]) * f, Math.sign(r[i][0] - r[i - 1][0])]; }
+    d -= seg;
+  }
+  return [...r[r.length - 1], 0];
+}
+/* Ruta desde el frente del escritorio del Jefe hasta el cuarto (sin atravesar escritorio ni trono) */
+function rutaJefe(kJ, kD) {
+  const A = cuartos.get(kJ), base = caminoEntre(kJ, kD); if (!A || !base || base.length < 2) return null;
+  const C = RW / 2, pts = [[A.x + C, A.y + 112]];
+  if (base.length >= 4 && Math.abs(base[1][1] - (A.y + 84)) < 1) pts.push([base[2][0], A.y + 112], [base[2][0], A.y + 84], ...base.slice(3));   // puerta lateral
+  else if (base[1][1] < A.y + 60) pts.push([A.x + 146, A.y + 112], [A.x + 146, A.y + 30], [A.x + C, A.y + 30], ...base.slice(2));                 // puerta de arriba: rodea el trono
+  else pts.push(...base.slice(1));
+  const B = cuartos.get(kD); pts[pts.length - 1] = [B.x + C + 26, B.y + 104];
+  return pts;
+}
+function porInvestigar(ahora) {
+  const orden = [...hallazgos].sort((a, b) => (a.severidad === 'alta' ? 0 : 1) - (b.severidad === 'alta' ? 0 : 1) || String(a.abierto_en).localeCompare(String(b.abierto_en)));
+  for (const h of orden) {
+    const k = [...cuartos.keys()].find(k => !esGlobal(k) && hallazgosDe(k).includes(h)); if (!k) continue;
+    const v = visitas.get(h.clave);
+    if (!v || v.marca !== marcaH(h) || ahora - v.en > REVISITA_MS) return { h, k };
+  }
+  return null;
+}
+const posDe = (...ks) => ks.map(k => { const c = cuartos.get(k); return c ? c.x + ',' + c.y : '-'; }).join('|');
+const hallazgoVivo = () => hallazgos.find(x => x.clave === INV.h?.clave) || INV.h || {};
+/* Texto largo en trozos que caben en un globo */
+function trozos(txt, n = 30) { const out = []; let l = ''; for (const w of String(txt).toUpperCase().split(/\s+/)) { if ((l + ' ' + w).trim().length > n) { if (l) out.push(l); l = w.slice(0, n); } else l = (l + ' ' + w).trim(); } if (l) out.push(l); return out; }
+function lineasInforme(h) {
+  const L = [];
+  if (h.causa) L.push(...trozos('CAUSA: ' + h.causa)); else L.push('AÚN NO HAY CAUSA CLARA', 'SIGO INVESTIGANDO');
+  if (h.accion) L.push(...trozos('HACER: ' + h.accion).slice(0, 3));
+  if (h.aprendido) L.push(...trozos(h.aprendido.split('\n')[0]).slice(0, 2));
+  return L;
+}
+function actualizarInvestigacion(ahora) {
+  const kJ = [...cuartos.keys()].find(k => k.startsWith('jefe|'));
+  if (!kJ || ['caido', 'sindatos', 'durmiendo'].includes(estadoVista(kJ))) { if (INV.fase && INV.fase !== 'informar') { JEFE.x = RW / 2; JEFE.y = 112; } INV.fase = null; señalandoDesde = 0; return; }
+  if (INV.fase && INV.fase !== 'informar' && (INV.pos !== posDe(INV.kJ, INV.k) || !cuartos.has(INV.k))) {   // cambió el mapa: vuelve a su oficina
+    INV.fase = null; JEFE.x = RW / 2; JEFE.y = 112; señalandoDesde = ahora; return;
+  }
+  if (!INV.fase) {
+    if (!jefeVa) { señalandoDesde = 0; return; }
+    señalandoDesde ||= ahora;
+    if (ahora - señalandoDesde < SEÑALAR_MS || reaccion) return;
+    const p = porInvestigar(ahora); if (!p) return;
+    Object.assign(INV, { fase: 'salir', h: p.h, k: p.k, kJ, pos: posDe(kJ, p.k), t0: ahora });
+  } else if (INV.fase === 'investigar' && ahora - INV.t0 > INVESTIGAR_MS) {
+    const r = rutaJefe(INV.kJ, INV.k);
+    if (!r) { INV.fase = 'informar'; INV.t0 = ahora; JEFE.x = RW / 2; JEFE.y = 112; return; }
+    r.reverse(); Object.assign(INV, { fase: 'vuelta', ruta: r, largo: largoRuta(r), t0: ahora });
+  } else if (INV.fase === 'informar' && ahora - INV.t0 > INFORMAR_MS) {
+    visitas.set(INV.h.clave, { marca: marcaH(hallazgoVivo()), en: ahora }); INV.fase = null; señalandoDesde = ahora;
+  }
+}
+function salirAInvestigar(ahora) {   // la oficina la llama cuando el Jefe ya está frente a su escritorio
+  const r = rutaJefe(INV.kJ, INV.k);
+  if (!r) { visitas.set(INV.h.clave, { marca: marcaH(INV.h), en: ahora }); INV.fase = null; return; }
+  Object.assign(INV, { fase: 'ida', ruta: r, largo: largoRuta(r), t0: ahora });
+}
+function lupa(x, y, t) {
+  const c = '#e5e7eb';
+  px(x - 3, y - 4, 6, 1, c); px(x - 3, y + 3, 6, 1, c); px(x - 4, y - 3, 1, 6, c); px(x + 3, y - 3, 1, 6, c);
+  px(x - 3, y - 3, 6, 6, 'rgba(147,197,253,.35)'); if (Math.floor(t / 300) % 2) px(x - 2, y - 2, 2, 1, '#fff');
+  px(x + 3, y + 3, 2, 2, '#78350f'); px(x + 5, y + 5, 2, 2, '#78350f');
+}
+/* Se dibuja sobre todo el mapa (coordenadas globales) */
+function dibujarJefeFuera(t) {
+  const ahora = performance.now();
+  if (INV.fase === 'ida' || INV.fase === 'vuelta') {
+    const d = (ahora - INV.t0) / 1000 * VEL_JEFE;
+    if (d >= INV.largo) {
+      if (INV.fase === 'ida') { INV.fase = 'investigar'; INV.t0 = ahora; }
+      else { INV.fase = 'informar'; INV.t0 = ahora; JEFE.x = RW / 2; JEFE.y = 112; JEFE.ultimo = ahora; return; }
+    } else {
+      const [x, y, dir] = puntoRuta(INV.ruta, d);
+      jefeRey(x, y, t, { pose: 'camina', mira: dir });
+      if (Math.floor(t / 2000) % 2 === 0) globo(x, y - ALTO_JEFE - 4, INV.fase === 'ida' ? 'VOY A INVESTIGAR' : 'YA SÉ QUÉ PASÓ', '#fde68a', '#111', false);
+      return;
+    }
+  }
+  if (INV.fase === 'investigar') {
+    const B = cuartos.get(INV.k); if (!B) return;
+    const x = B.x + RW / 2 + 26, y = B.y + 104, p = (ahora - INV.t0) / INVESTIGAR_MS;
+    jefeRey(x, y, t, { pose: 'pie', mano: 'tabla', mira: Math.sin(t / 700) });
+    lupa(x - 16 + Math.sin(t / 350) * 7, y - 34 + Math.cos(t / 450) * 3, t);
+    if (p < .6) {
+      globo(x, y - ALTO_JEFE - 4, FR_INV[Math.floor(t / 2400) % FR_INV.length], '#e0f2fe', '#111', false);
+      if (Math.floor(t / 400) % 2) texto('?', x + 16, y - ALTO_JEFE + 10, 5, '#fde047');
+    } else {
+      const L = lineasInforme(hallazgoVivo());
+      globo(x, y - ALTO_JEFE - 4, L[Math.floor((ahora - INV.t0 - .6 * INVESTIGAR_MS) / 2200) % L.length], '#fde68a', '#111', false);
+      if (Math.floor(t / 300) % 2) texto('!', x + 16, y - ALTO_JEFE + 10, 5, '#22c55e');
+    }
+  }
+}
+
 function salaJefatura(q, s, est, t) {
   const caido = ['caido', 'sindatos'].includes(est);
   const C = RW / 2, ahora = performance.now();
@@ -919,7 +1030,11 @@ function salaJefatura(q, s, est, t) {
   if (reaccion && !reaccion.inicio && ahora - reaccion.t0 > 15000) reaccion = null;          // no pudo llegar: se olvida
   const rx = caido ? null : reaccion;
   let plan;
-  if (rx && rx.tipo === 'orden') plan = { x: C + 4, y: 104, hacer: 'orden' };
+  const fuera = ['ida', 'investigar', 'vuelta'].includes(INV.fase);
+  if (INV.fase === 'salir') plan = { x: C, y: 112, hacer: 'salir' };
+  else if (INV.fase === 'informar') plan = { x: C, y: 112, hacer: 'informar' };
+  else if (fuera) plan = { x: C, y: 112, hacer: 'fuera' };
+  else if (rx && rx.tipo === 'orden') plan = { x: C + 4, y: 104, hacer: 'orden' };
   else if (rx) plan = { x: JEFE.x ?? C, y: Math.max(98, JEFE.y ?? 112), hacer: rx.tipo };        // se enoja / celebra donde está
   else if (d) {
     const dx = d.x - q.x, dy = d.y - q.y;
@@ -935,14 +1050,26 @@ function salaJefatura(q, s, est, t) {
     ]);
     plan = { x: r.x, y: r.y, hacer: r.accion === 'camina' ? 'pasear' : r.accion, patrulla: true };
   }
-  const llego = caminarJefe(plan.x, plan.y, ahora) || (plan.patrulla && Math.hypot(plan.x - JEFE.x, plan.y - JEFE.y) < 6);
-  if (rx && llego && !rx.inicio) rx.inicio = ahora;                                              // la reacción cuenta desde que llega
+  const llego = fuera || caminarJefe(plan.x, plan.y, ahora) || (plan.patrulla && Math.hypot(plan.x - JEFE.x, plan.y - JEFE.y) < 6);
+  if (plan.hacer === 'salir' && llego) salirAInvestigar(ahora);
+  if (rx && llego && !rx.inicio && !INV.fase) rx.inicio = ahora;                                 // la reacción cuenta desde que llega
   const atras = JEFE.y < 80;
   const sentado = llego && atras && (plan.hacer === 'dormir' || plan.hacer === 'revisar');
 
   // ---------- Dibujo: el Jefe detrás o delante del escritorio ----------
   const pinta = () => {
     const x = JEFE.x, y = JEFE.y, n = Math.floor((t + q.fase) / 4000);
+    if (plan.hacer === 'fuera') {   // salió a investigar: su oficina queda con un letrero
+      px(C - 30, 58, 60, 9, '#111827'); px(C - 30, 58, 60, 1, '#f59e0b');
+      texto('FUI A INVESTIGAR', C, 65, 4, '#fde68a', true);
+      return;
+    }
+    if (plan.hacer === 'informar' && llego) {
+      const L = lineasInforme(hallazgoVivo());
+      jefeRey(x, y, t, { pose: 'pie', mano: 'tabla', mira: Math.sin(t / 900) });
+      globo(x, y - ALTO_JEFE - 4, L[Math.floor((ahora - INV.t0) / 2400) % L.length], '#fde68a', '#111');
+      return;
+    }
     if (sentado) {
       const pose = plan.hacer === 'dormir' ? 'dormido' : 'sentado';
       jefeRey(C, 94, t, { pose, mano: pose === 'sentado' ? 'tabla' : null, mira: Math.sin(t / 900) });
@@ -953,6 +1080,7 @@ function salaJefatura(q, s, est, t) {
     if (!llego) {   // caminando hacia su plan
       jefeRey(x, y, t, { pose: 'camina', aura: plan.hacer === 'señalar' ? aura : null, mira: JEFE.mira || 0 });
       if (plan.hacer === 'señalar' && Math.floor(t / 1600) % 2 === 0) globo(x, y - ALTO_JEFE - 4, frase('camino', n), '#fde68a', '#111');
+      if (plan.hacer === 'salir' && Math.floor(t / 1600) % 2 === 0) globo(x, y - ALTO_JEFE - 4, 'VOY A REVISAR ESO', '#fde68a', '#111');
       return;
     }
     const tipoR = rx?.tipo, f = rx?.inicio ? (ahora - rx.inicio) / DUR_REACCION[tipoR] : 0;
@@ -1155,8 +1283,10 @@ function loop(t) {
   dibujarAntorchas(t);
   actualizarUbicaciones();
   jefeVa = destinoJefe(t);
+  actualizarInvestigacion(performance.now());
   cuartos.forEach(q => dibujarCuarto(q, t));
   dibujarInteracciones(t);
+  dibujarJefeFuera(t);
   requestAnimationFrame(loop);
 }
 
