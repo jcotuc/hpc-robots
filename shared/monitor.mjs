@@ -6,15 +6,16 @@
 //       ROBOT_CENTRO (opcional, ej. Nodus): centro de servicio. Requiere monitor/03_centros.sql
 import os from 'node:os'
 
-const URL_ = (process.env.MONITOR_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '')
-const KEY = process.env.MONITOR_SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-const TOKEN = (process.env.MONITOR_TOKEN || '').trim()
-const CENTRO = (process.env.ROBOT_CENTRO || '').trim()
-const PC = (process.env.ROBOT_PC || os.hostname()).trim().toUpperCase()
 const LLAMADA_RE = /\bLL[A-Z]?\d+-\d+\b/i
 const corto = (x) => String(x?.message || x || '').split('\n')[0].slice(0, 500)
 
 export function crearMonitor(robot, { intervaloSeg = 180, activo = true } = {}) {
+  // el .env se lee al crear el monitor (no al importar): así sirve también con dotenv
+  const URL_ = (process.env.MONITOR_SUPABASE_URL || process.env.SUPABASE_URL || '').replace(/\/$/, '')
+  const KEY = process.env.MONITOR_SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+  const TOKEN = (process.env.MONITOR_TOKEN || '').trim()
+  const CENTRO = (process.env.ROBOT_CENTRO || '').trim()
+  const PC = (process.env.ROBOT_PC || os.hostname()).trim().toUpperCase()
   const on = Boolean(activo && URL_ && KEY && process.env.MONITOR_APAGADO !== '1')
   let cola = Promise.resolve() // en orden: un "trabajando" nunca llega después del "esperando"
   let avisado = false

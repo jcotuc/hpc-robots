@@ -146,6 +146,8 @@ const ROBOTS = [
       { id: 'autoconsumos', nombre: 'Autoconsumos',   rotulo: 'AUTOCONSUMOS', color: '#fbbf24', tipos: /\bautoconsumo/ },
       { id: 'garantias',    nombre: 'Garantías / NC', rotulo: 'GARANTIA/NC',  color: '#38bdf8', tipos: /\b(garantia|nc)_/ },
     ] },
+  /* Se corre a mano (manual): si no reporta no es falla; si tiene NDC pendientes queda ESPERANDO a que lo corran */
+  { id: 'garantias',   nombre: 'Garantías',   sala: 'garantia',   centro: 'Nodus',  manual: true, color: '#c084fc', intervalo: 1800 },
   // { id: 'mimo', nombre: 'MiMo', sala: 'recepcion', color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
 ];
 /* Flujos reales entre robots: la misma llamada pasa de un robot al otro.
@@ -245,10 +247,11 @@ function minEnHorario(id) {
 function estadoEfectivo(s, id) {
   if (meta(id || s?.robot).sala === 'cafeteria') return 'esperando';
   const m = minEnHorario(id || s?.robot);
-  if (!s) return m === null ? 'durmiendo' : 'sindatos';
+  if (!s) return meta(id).manual ? 'esperando' : m === null ? 'durmiendo' : 'sindatos';
   const limite = (s.intervalo_seg || 180) * 2 + GRACIA_SEG;
   const edad = (Date.now() - new Date(s.last_seen).getTime()) / 1000;
   if (edad <= limite) return s.estado;
+  if (meta(id || s.robot).manual) return 'esperando';     // manual: esperando a que lo corran
   if (m === null || m * 60 < limite) return 'durmiendo';
   return 'caido';
 }
@@ -1007,6 +1010,35 @@ function avisoDelJefe(q, t) {
   if (sube) { ctx.strokeStyle = c; ctx.lineWidth = 1; ctx.strokeRect(x - .5, y + .5, 21, 17); }
 }
 
+/* Garantías manuales (NDC): bandeja de expedientes → compu (crea la llamada) → sello "NC AUTORIZADA" → archivero */
+function salaGarantia(q, s, est, t, col) {
+  const BA = [28, 80], PC = [82, 80], SE = [126, 80], AR = [156, 80];
+  // bandeja con expedientes pendientes (lo que contó el Jefe)
+  px(12, 62, 30, 4, '#7c5a3a'); px(14, 66, 3, 12, '#5c4128'); px(37, 66, 3, 12, '#5c4128');
+  const pend = Math.min(7, carga.get('garantias')?.pendientes || 0);
+  for (let i = 0; i < pend; i++) { px(15 + (i % 2), 58 - i * 2, 22, 3, i % 2 ? '#c084fc' : '#a855f7'); px(16, 58 - i * 2, 6, 1, '#f5d0fe'); }
+  texto(pend ? `${carga.get('garantias').pendientes} NDC` : 'SIN NDC', 27, 86, 3, pend ? '#f5d0fe' : '#6b6475', true);
+  // compu
+  escritorio(64, 62, 38); compu(73, 46, est, t, true);
+  // mesa del sello
+  px(112, 62, 28, 4, '#7c5a3a'); px(114, 66, 3, 12, '#5c4128'); px(135, 66, 3, 12, '#5c4128');
+  // archivero: un cajón más lleno por NC del día
+  px(146, 46, 22, 32, '#57534e'); for (let i = 0; i < 3; i++) { px(148, 49 + i * 10, 18, 8, '#78716c'); px(155, 52 + i * 10, 4, 2, '#d6d3d1'); }
+  const ok = Math.min(9, resumen.get(q.k)?.ok_hoy || 0); for (let i = 0; i < ok; i++) px(149 + (i % 3) * 5, 43 - Math.floor(i / 3) * 2, 4, 2, '#f5d0fe');
+  // letrero
+  px(56, 28, 72, 12, '#1f2937'); px(56, 28, 72, 2, col); texto('NOTAS DE CRÉDITO', 92, 37, 4, '#f5d0fe', true);
+  let r = { x: PC[0], y: PC[1], accion: 'pie', f: 0 };
+  if (est === 'trabajando') r = ruta(t + q.fase, PC, [
+    { ir: BA, ms: 1300 }, { hacer: 'tomar', ms: 700 }, { ir: PC, ms: 1300, carga: 'papel' }, { hacer: 'teclear', ms: 2200 },
+    { ir: SE, ms: 1000, carga: 'papel' }, { hacer: 'sellar', ms: 1200, carga: 'papel' }, { ir: AR, ms: 800, carga: 'papel' }, { hacer: 'archivar', ms: 800 }, { ir: PC, ms: 1500 },
+  ]);
+  const sello = r.accion === 'sellar' ? Math.abs(Math.sin(r.f * Math.PI * 3)) : 0;
+  px(122, 52 - sello * 6, 6, 6, '#7e22ce'); px(123, 49 - sello * 6, 4, 3, '#57534e');
+  if (r.accion === 'sellar' && r.f > .5) { px(116, 60, 18, 3, '#fff'); texto('NC', 125, 62, 3, '#7e22ce', true); }
+  if (r.accion === 'archivar') px(148, 49 + 20 - r.f * 4, 18, 8, '#a8a29e');
+  return r;
+}
+
 function salaGenerica(q, s, est, t) {
   escritorio(70, 60, 40); compu(80, 44, est, t, true);
   return { x: 90, y: 78, accion: est === 'trabajando' ? 'teclear' : 'pie', f: 0 };
@@ -1070,6 +1102,7 @@ function dibujarCuarto(q, t) {
   else if (m.sala === 'correo' && m.areas) r = salaCorreo(q, s, est, t, m.color, m.areas);
   else if (m.sala === 'jefatura') r = salaJefatura(q, s, est, t);
   else if (m.sala === 'cafeteria') r = salaCafeteria(q, t);
+  else if (m.sala === 'garantia') r = salaGarantia(q, s, est, t, m.color);
   else r = salaGenerica(q, s, est, t);
 
   if (fuera) {   // letrero: se fue a la cafetería
@@ -1173,6 +1206,7 @@ function renderCards() {
     const rs = resumen.get(k) || { ok_hoy: 0, errores_hoy: 0 }, cg = carga.get(id);
     const p = prevEst.get(k); if (p && p !== e && (e === 'error' || e === 'caido')) sonar(e); prevEst.set(k, e);
     const det = e === 'caido' ? `Sin reportar desde ${s ? hhmm(s.last_seen) : '—'} (esperado cada ${Math.round((s?.intervalo_seg || 180) / 60)} min)`
+      : m.manual && e === 'esperando' && cg?.pendientes > 0 ? `${cg.pendientes} NDC por sincronizar · se corre a mano (correr.cmd)`
       : e === 'libre' ? `Sin pendientes${cg?.detalle ? ' (' + cg.detalle + ')' : ''} · descansando en la cafetería`
       : e === 'sindatos' ? 'Aún no reporta al monitor'
       : e === 'durmiendo' ? `Fuera de horario (${m.horario.desde}–${m.horario.hasta})${s ? ' · última: ' + (s.detalle || '') : ''}`
@@ -1329,6 +1363,7 @@ function initDemo() {
     { robot: 'guias',       pc: 'HPCPCLOGISTICA', estado: 'trabajando', llamada: 'LLS21-557465', detalle: 'Procesando', intervalo_seg: 180 },
     { robot: 'digitadores', pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: 'LLS21-556758', detalle: 'Procesando', intervalo_seg: 180 },
     { robot: 'correos',     pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: '89DC279B', detalle: 'Enviando autoconsumo_solicitud', intervalo_seg: 120 },
+    { robot: 'garantias',   pc: 'HPCPCGARANTIAS', estado: 'trabajando', llamada: 'LLS21-559900', detalle: 'NDC cliente C1042', intervalo_seg: 1800 },
   ];
   base.unshift({ robot: 'jefe', pc: 'HPCLPJCOTUC', estado: 'esperando', detalle: 'Todo en orden', intervalo_seg: 300 });
   base.forEach(b => status.set(key(b.robot, b.pc), { ...b, version: '1.0', last_seen: iso(now) }));

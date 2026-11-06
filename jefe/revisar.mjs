@@ -35,7 +35,10 @@ const HORARIOS = {
   citas: { dias: LS, desde: '05:55', hasta: '20:25' }, guias: { dias: LS, desde: '07:00', hasta: '20:00' },
   digitadores: { dias: LS, desde: '07:00', hasta: '18:00' }, correos: { dias: LS, desde: '07:00', hasta: '20:00' },
 }
-const NOMBRES = { citas: 'Citas', guias: 'Guías', digitadores: 'Digitadores', correos: 'Correos' }
+const NOMBRES = { citas: 'Citas', guias: 'Guías', digitadores: 'Digitadores', correos: 'Correos', garantias: 'Garantías' }
+/* Robots que se corren a mano: si no reportan no es falla; solo importa si tienen pendientes esperando */
+const MANUALES = ['garantias']
+const GARANTIA_ESPERA_MIN = Number(E.GARANTIA_ESPERA_MIN || 60)
 
 const fechaGT = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' })
 const horaGT = (d = new Date()) => new Date(d).toLocaleTimeString('es-GT', { timeZone: 'America/Guatemala', hour: '2-digit', minute: '2-digit', hour12: false })
@@ -79,6 +82,7 @@ async function revisarRobots() {
     const edad = (Date.now() - new Date(s.last_seen).getTime()) / 1000
     const m = minEnHorario(s.robot)
     const carga = CARGA[s.robot]
+    if (MANUALES.includes(s.robot)) continue          // manual: ver revisarGarantias
     if (edad > limite && m !== null && m * 60 >= limite) {
       if (carga && carga.n === 0) { log(`OK ${n} sin reportar desde ${horaGT(s.last_seen)}, pero sin pendientes (${carga.detalle})`); continue }
       out.push({ clave: `caido:${s.robot}|${s.pc}`, robot: s.robot, pc: s.pc, centro: s.centro, severidad: 'alta',
@@ -262,6 +266,10 @@ async function revisarCarga() {
     const r = await q(CC, `llamadas_actualizaciones?select=num_llamada&estado_id=eq.${gar.id}&digitado_en=is.null&garantia_id=is.null&pendiente_en=is.null&limit=200`)
     return { n: r.length, detalle: r.length ? `${r.length} llamada(s) de Garantía en la Bandeja` : 'Sin Garantías en la Bandeja' }
   })
+  await intenta('garantias', async () => {
+    const r = await q(KK, 'garantias_manuales?select=id,created_at&sync_status=eq.pending&record_status=eq.NDC&deleted=eq.false&limit=200')
+    return { n: r.length, detalle: r.length ? `${r.length} NDC por sincronizar (se corre a mano)` : 'Sin NDC pendientes', masVieja: r.map((x) => x.created_at).sort()[0] }
+  })
   await intenta('guias', async () => {
     if (minEnHorario('guias') === null) return { n: null, detalle: 'Fuera de horario: no se revisó CSHP' }
     if (cshpCaido) return { n: null, detalle: 'CSHP no responde: no se pudo revisar' }
@@ -274,7 +282,22 @@ async function revisarCarga() {
   return []
 }
 
-const REVISIONES = { cshp: revisarCshp, carga: revisarCarga, robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores, sku: revisarSku }
+/* Garantías (manual): errores al crear la NC → alto; NDC esperando mucho a que alguien corra el robot → medio */
+async function revisarGarantias() {
+  const out = []
+  const mal = await q(KK, `garantias_manuales?select=id,codigo_cliente,external_id,sync_status,sync_retries&sync_status=in.(rejected,needs_review,duplicated)&deleted=eq.false&last_sync_attempt_at=gte.${haceMin(7 * 24 * 60)}&limit=50`)
+  if (mal.length) out.push({ clave: 'garantias:error', robot: 'garantias', severidad: 'alta',
+    titulo: `${mal.length} garantía(s) NDC con problema al crear la llamada`,
+    detalle: mal.slice(0, 10).map((g) => `Cliente ${g.codigo_cliente}${g.external_id ? ` (${g.external_id})` : ''}: ${g.sync_status === 'rejected' ? 'rechazada tras 3 intentos' : g.sync_status === 'duplicated' ? 'duplicada en CSHP' : 'creada en CSHP pero revisar en Supabase'}`).join(' · ') })
+  const c = CARGA.garantias
+  if (c?.n && c.masVieja && Date.now() - new Date(c.masVieja).getTime() > GARANTIA_ESPERA_MIN * 60000)
+    out.push({ clave: 'garantias:esperando', robot: 'garantias', severidad: 'media',
+      titulo: `${c.n} NDC esperando: hay que correr el robot de Garantías`,
+      detalle: `La más vieja desde las ${horaGT(c.masVieja)}. Se corre a mano en su PC (correr.cmd).` })
+  return out
+}
+
+const REVISIONES = { cshp: revisarCshp, carga: revisarCarga, garantias: revisarGarantias, robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores, sku: revisarSku }
 
 /* =============== Hallazgos: abrir / actualizar / cerrar =============== */
 async function avisar(h, abierto) {
@@ -332,7 +355,7 @@ async function main() {
     }
   }
   // se cierran solo los que ya no aparecen Y cuya revisión sí corrió (si una revisión falló, no se cierra lo suyo)
-  const REV = { caido: 'robots', error: 'robots', robots: 'robots', citas: 'citas', correos: 'correos', digitadores: 'digitadores', sku: 'sku', llm: 'cshp', cshp: 'cshp' }
+  const REV = { garantias: 'garantias', caido: 'robots', error: 'robots', robots: 'robots', citas: 'citas', correos: 'correos', digitadores: 'digitadores', sku: 'sku', llm: 'cshp', cshp: 'cshp' }
   const prefijo = (c) => c.startsWith('jefe:revision:') ? c.split(':')[2] : REV[c.split(':')[0]] || c.split(':')[0]
   for (const a of abiertos) {
     if (encontrados.some((h) => h.clave === a.clave)) continue

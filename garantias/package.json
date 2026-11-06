@@ -1,0 +1,17 @@
+{
+  "name": "hpc-garantias-robot",
+  "private": true,
+  "type": "module",
+  "description": "Robot de garantías manuales (NDC): crea la llamada en CSHP y la pasa a TLS - NC Autorizada. Se corre a mano.",
+  "scripts": {
+    "qa": "tsx sync.ts",
+    "prod": "cross-env SYNC_ENV=prod tsx sync.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "dotenv": "^17.4.2",
+    "playwright": "1.64.1",
+    "tsx": "^4.20.6",
+    "cross-env": "^7.0.3"
+  }
+}
