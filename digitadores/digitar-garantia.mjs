@@ -25,6 +25,7 @@
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { crearMonitor } from '../shared/monitor.mjs'
+import { hostname } from 'node:os'
 import { mkdirSync, readFileSync, writeFileSync, appendFileSync, openSync, closeSync, unlinkSync, statSync } from 'node:fs'
 
 // ─── Configuración ───────────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ const LENTO = arg('--lento')
 // En QA nunca se escribe en la Bandeja (es la de producción)
 const ESCRIBE_BANDEJA = ES_PROD && !SOLO_LISTAR
 const RESERVA_MS = 30 * 60 * 1000
-const mon = crearMonitor('digitadores', { intervaloSeg: 180, activo: ESCRIBE_BANDEJA && !PRUEBA })
+const mon = monitorPorCentro()   // dungeon: un digitador por centro de servicio (ver abajo)
 const REGISTRO = 'registro.json'
 const PATRON = /^LL[SM]\d+-\d+$/i
 
@@ -97,6 +98,63 @@ function log(linea) {
 function resumen(linea) {
   mon.linea(linea)
   try { mkdirSync('logs', { recursive: true }); appendFileSync(`logs/resumen-${fechaGT()}.log`, `${horaGT()}  ${linea}\r\n`) } catch { /* nunca detiene */ }
+}
+
+// ─── Dungeon: un digitador por centro de servicio ───────────────────────────
+// Es el MISMO robot: solo se reporta al monitor separado por el centro de cada llamada (Bandeja → llamadas_centros).
+// Cada centro es una fila en robot_status con pc = "<PC> · <centro>"; todas reportan en cada corrida (si no, saldrían caídas).
+// Centros que ya tuvieron llamadas: centros-dungeon.json (se agregan solos). Requiere monitor/03_centros.sql
+const CENTRO_DUNGEON = { 'zona 6': 'Nodus' }   // nombre en la Bandeja → nivel del dungeon (los demás se llaman igual)
+const centroDungeon = (n) => CENTRO_DUNGEON[normalizar(n)] || String(n ?? '').trim() || 'Nodus'
+function monitorPorCentro() {
+  const activo = ESCRIBE_BANDEJA && !PRUEBA
+  const ARCHIVO = 'centros-dungeon.json', PC_BASE = (process.env.ROBOT_PC || hostname()).trim().toUpperCase()
+  let vistos
+  try { vistos = JSON.parse(readFileSync(ARCHIVO, 'utf8')) } catch { vistos = (process.env.DIGITADORES_CENTROS || 'Nodus,Zona 4,Cobán').split(',').map((x) => x.trim()).filter(Boolean) }
+  const mons = new Map(), cuenta = new Map(), centroLlamada = new Map()
+  const de = (c) => {
+    if (!mons.has(c)) mons.set(c, crearMonitor('digitadores', { intervaloSeg: 180, activo, pc: `${PC_BASE} · ${c}`, centro: c }))
+    if (activo && !vistos.includes(c)) { vistos.push(c); try { writeFileSync(ARCHIVO, JSON.stringify(vistos)) } catch { /* nunca detiene */ } }
+    return mons.get(c)
+  }
+  vistos.forEach(de)
+  const deLlamada = (t) => centroLlamada.get(((String(t ?? '').match(/\bLL[SM]\d+-\d+\b/i) || [])[0] || '').toUpperCase())
+  return {
+    activo,
+    /** Al empezar: los centros con llamadas pasan a trabajando, los demás a esperando */
+    inicio(lista) {
+      const por = new Map()
+      for (const a of lista) {
+        const c = centroDungeon(a.llamadas_centros?.nombre)
+        centroLlamada.set(a.num_llamada.toUpperCase(), c); por.set(c, (por.get(c) || 0) + 1)
+      }
+      for (const [c, n] of por) de(c).trabajando(null, `${n} llamada(s) por procesar`)
+      for (const c of [...mons.keys()]) if (!por.has(c)) de(c).fin('Sin llamadas de Garantía en este centro')
+    },
+    trabajando(numero, detalle) { const c = deLlamada(numero); if (c) de(c).trabajando(numero, detalle) },
+    /** Línea del resumen: la de una llamada va al centro de esa llamada; la de fin de corrida, a todos */
+    linea(texto) {
+      const t = String(texto || '').trim()
+      if (!t || /^OMITIDA corrida/i.test(t)) return
+      if (t.startsWith('---')) {
+        const d = t.replace(/^-+\s*/, '')
+        if (/OMITIDA/.test(d)) return
+        for (const [c, m] of mons) {
+          if (/\bERROR\b|FALLÓ/.test(d)) { m.error(d); continue }
+          const x = cuenta.get(c)
+          m.fin(x ? Object.entries(x).map(([k, n]) => `${n} ${k}`).join(' · ')
+            : /sin llamadas/i.test(d) ? d.replace(/^corrida\s*/i, '').replace(/^s/, 'S') : 'Sin llamadas de Garantía en este centro')
+        }
+        cuenta.clear()
+        return
+      }
+      const c = deLlamada(t) || 'Nodus'
+      const tipo = /\bYA DIGITADA\b/.test(t) ? 'ya digitadas' : /\bDIGITADA\b/.test(t) ? 'digitadas' : /\bPENDIENTE\b/.test(t) ? 'pendientes' : /\bERROR\b/.test(t) ? 'con error' : null
+      if (tipo) { const x = cuenta.get(c) || {}; x[tipo] = (x[tipo] || 0) + 1; cuenta.set(c, x) }
+      de(c).linea(t)
+    },
+    flush: () => Promise.all([...mons.values()].map((m) => m.flush())),
+  }
 }
 
 // ─── Diagnóstico (copiado de ConsumosCS: llamadas-diagnostico.ts, llamadas-machotes.ts, llamadas-diagnostico-revision.ts) ──
@@ -799,7 +857,7 @@ async function main() {
   if (SOLO_LISTAR || !lista.length) return
 
   if (!tomarLock()) { log('⏳ Otra corrida sigue activa (.sync.lock). Se sale.'); return }
-  mon.trabajando(null, `${lista.length} llamada(s) por procesar`)
+  mon.inicio(lista)
   const browser = await chromium.launch({ headless: !VISIBLE, slowMo: LENTO ? 250 : 0 })
   const page = await (await browser.newContext()).newPage()
   const cuenta = { digitada: 0, ya: 0, pendiente: 0, error: 0, tomada: 0 }

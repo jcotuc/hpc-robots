@@ -177,11 +177,15 @@ const carga = new Map();     // robot -> { pendientes, detalle, revisado_en }  (
 const ubic = new Map();      // robot|pc -> { lugar: 'cuarto' | 'cafe', viajando }
 const KEY_CAFE = 'cafeteria|—';
 /* ¿El robot no tiene trabajo? Primero lo que contó el Jefe (pendientes reales); si no, lo que reportó el robot */
+/* Carga del robot en el centro de ese cuarto (digitadores: una por centro) o la general */
+const cargaDe = k => { const id = k.split('|')[0]; return carga.get(`${id}@${centroDe(k)}`) || carga.get(id); };
+/* Nombre del cuarto; si el mismo robot tiene varios cuartos (digitadores por centro) se agrega el centro */
+const nombreDe = k => { const id = k.split('|')[0], m = meta(id); return todasLasKeys().filter(x => x.startsWith(id + '|')).length > 1 ? `${m.nombre} · ${centroDe(k)}` : m.nombre; };
 function sinTrabajo(k) {
   const [id] = k.split('|'), m = meta(id); if (m.global) return false;
   const s = status.get(k), e = estadoEfectivo(s, id);
   if (e === 'trabajando' || e === 'error') return false;
-  const c = carga.get(id), fresca = c && c.pendientes !== null && Date.now() - new Date(c.revisado_en).getTime() < 20 * 60000;
+  const c = cargaDe(k), fresca = c && c.pendientes !== null && Date.now() - new Date(c.revisado_en).getTime() < 20 * 60000;
   if (fresca) return c.pendientes === 0;
   if (e === 'durmiendo') return true;
   if (e === 'esperando') return /\bsin |corrida sin|todo en orden|apagado/i.test(s?.detalle || '');
@@ -1169,7 +1173,7 @@ function abrirTip(q, e) {
   const hs = m.global ? hallazgos : hallazgosDe(q.k);
   const enCola = id === 'guias' ? [...flujo.entries()].filter(([, f]) => f.a === 'guias' && !f.impresa).map(([L]) => L) : [];
   const limpio = ev => { let t = String(ev.mensaje || ''); if (ev.llamada) t = t.replace(new RegExp('^\\s*(OK\\s+)?' + ev.llamada.replace(/[-]/g, '\\-') + '\\s*', 'i'), ''); return t.replace(/\s+/g, ' ').trim().slice(0, 42); };
-  tip.innerHTML = `<b class="n" style="color:${m.color}">${esc(m.nombre)}</b><span class="meta">${ESTADOS[e2].txt} · ${hace(s?.last_seen)}</span>`
+  tip.innerHTML = `<b class="n" style="color:${m.color}">${esc(m.global ? m.nombre : nombreDe(q.k))}</b><span class="meta">${ESTADOS[e2].txt} · ${hace(s?.last_seen)}</span>`
     + (enCola.length ? `<div class="l"><b>Por imprimir:</b> ${esc(enCola.slice(0, 4).join(', '))}${enCola.length > 4 ? '…' : ''}</div>` : '')
     + hs.slice(0, 3).map(h => `<div class="l"><span class="dot" style="background:${HALLAZGO_COLOR(h)}"></span>${esc(h.titulo)}</div>`).join('')
     + (evs.length ? evs.map(ev => `<div class="l"><span class="meta">${hhmm(ev.created_at)}</span><span style="color:${ev.tipo === 'ok' ? 'var(--ok)' : ev.tipo === 'error' ? 'var(--err)' : 'var(--wait)'}">${ev.tipo.toUpperCase()}</span>${esc(ev.llamada || '')} <span class="meta">${esc(limpio(ev))}</span></div>`).join('') : '<span class="meta">Sin movimientos recientes</span>');
@@ -1198,12 +1202,12 @@ function renderCards() {
   cont.innerHTML = [...cuartos.keys()].map(k => {
     const [id, pc] = k.split('|'), s = status.get(k), e = estadoVista(k), m = meta(id);
     if (m.sala === 'cafeteria') {
-      const aqui = [...ubic.entries()].filter(([kk, u]) => u.lugar === 'cafe' && !u.viajando && cuartos.has(kk)).map(([kk]) => meta(kk.split('|')[0]).nombre);
+      const aqui = [...ubic.entries()].filter(([kk, u]) => u.lugar === 'cafe' && !u.viajando && cuartos.has(kk)).map(([kk]) => nombreDe(kk));
       return `<article class="card" data-k="${esc(k)}"><div class="row"><span class="name" style="color:${m.color}">Cafetería</span><span class="badge" style="background:#38bdf8">${aqui.length} DESCANSANDO</span></div>
         <div class="det">${aqui.length ? 'Sin pendientes: ' + esc(aqui.join(', ')) : 'Todos trabajando'}</div></article>`;
     }
     if (!m.global || m.sala === 'jefatura') cnt[e]++;
-    const rs = resumen.get(k) || { ok_hoy: 0, errores_hoy: 0 }, cg = carga.get(id);
+    const rs = resumen.get(k) || { ok_hoy: 0, errores_hoy: 0 }, cg = cargaDe(k);
     const p = prevEst.get(k); if (p && p !== e && (e === 'error' || e === 'caido')) sonar(e); prevEst.set(k, e);
     const det = e === 'caido' ? `Sin reportar desde ${s ? hhmm(s.last_seen) : '—'} (esperado cada ${Math.round((s?.intervalo_seg || 180) / 60)} min)`
       : m.manual && e === 'esperando' && cg?.pendientes > 0 ? `${cg.pendientes} NDC por sincronizar · se corre a mano (correr.cmd)`
@@ -1212,8 +1216,8 @@ function renderCards() {
       : e === 'durmiendo' ? `Fuera de horario (${m.horario.desde}–${m.horario.hasta})${s ? ' · última: ' + (s.detalle || '') : ''}`
       : (s?.detalle || '') + (s?.llamada ? (m.sala === 'correo' ? ' · Ref. ' : ' · Llamada ') + s.llamada : '') + (enCafe(k) ? ' · en la cafetería' : '') + (cg && cg.pendientes > 0 && e !== 'trabajando' ? ` · ${cg.pendientes} pendiente(s)` : '');
     return `<article class="card ${e}" data-k="${esc(k)}">
-      <div class="row"><span class="name" style="color:${m.color}">${esc(m.nombre)}</span><span class="badge" style="background:${ESTADOS[e].c}">${ESTADOS[e].txt}</span></div>
-      <div class="row meta"><span>${esc(m.global ? 'Todos los centros' : centroDe(k))} · PC: ${esc(pc)}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
+      <div class="row"><span class="name" style="color:${m.color}">${esc(nombreDe(k))}</span><span class="badge" style="background:${ESTADOS[e].c}">${ESTADOS[e].txt}</span></div>
+      <div class="row meta"><span>${esc(m.global ? 'Todos los centros' : centroDe(k))} · PC: ${esc(String(pc).replace(/ · .*$/, ''))}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
       <div class="det" title="${esc(det)}">${esc(det)}</div>
       ${s?.ultimo_error && e === 'error' ? `<div class="err-txt" title="${esc(s.ultimo_error)}">Último error: ${esc(s.ultimo_error)}</div>` : ''}
       ${m.global ? '' : `<div class="stats"><span>Hoy OK <b style="color:var(--ok)">${rs.ok_hoy}</b></span><span>Errores <b style="color:var(--err)">${rs.errores_hoy}</b></span></div>`}
@@ -1361,9 +1365,11 @@ function initDemo() {
   const base = [
     { robot: 'citas',       pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: 'LLS21-558012', detalle: 'Cita 412 · equipo 1 · SKU 4521', intervalo_seg: 300 },
     { robot: 'guias',       pc: 'HPCPCLOGISTICA', estado: 'trabajando', llamada: 'LLS21-557465', detalle: 'Procesando', intervalo_seg: 180 },
-    { robot: 'digitadores', pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: 'LLS21-556758', detalle: 'Procesando', intervalo_seg: 180 },
+    { robot: 'digitadores', pc: 'HPCLPJCOTUC · Nodus', centro: 'Nodus', estado: 'trabajando', llamada: 'LLS21-556758', detalle: 'Procesando', intervalo_seg: 180 },
     { robot: 'correos',     pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: '89DC279B', detalle: 'Enviando autoconsumo_solicitud', intervalo_seg: 120 },
     { robot: 'garantias',   pc: 'HPCPCGARANTIAS', estado: 'trabajando', llamada: 'LLS21-559900', detalle: 'NDC cliente C1042', intervalo_seg: 1800 },
+    { robot: 'digitadores', pc: 'HPCLPJCOTUC · Zona 4', centro: 'Zona 4', estado: 'esperando', detalle: '2 digitadas', intervalo_seg: 180 },
+    { robot: 'digitadores', pc: 'HPCLPJCOTUC · Cobán', centro: 'Cobán', estado: 'esperando', detalle: 'Sin llamadas de Garantía en este centro', intervalo_seg: 180 },
   ];
   base.unshift({ robot: 'jefe', pc: 'HPCLPJCOTUC', estado: 'esperando', detalle: 'Todo en orden', intervalo_seg: 300 });
   base.forEach(b => status.set(key(b.robot, b.pc), { ...b, version: '1.0', last_seen: iso(now) }));

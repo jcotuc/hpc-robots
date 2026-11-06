@@ -70,6 +70,9 @@ async function q(db, path, { method = 'GET', body, prefer } = {}) {
   return t ? JSON.parse(t) : null
 }
 
+/* Nombre del centro en la Bandeja (ConsumosCS) → nivel del dungeon. Igual que en digitadores/digitar-garantia.mjs */
+const centroDungeon = (n) => ({ 'zona 6': 'Nodus' })[String(n ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()] || String(n ?? '').trim() || 'Nodus'
+
 /* =============== Revisiones (cada una devuelve hallazgos) =============== */
 // h = { clave, robot, pc?, centro?, severidad: 'alta'|'media', titulo, detalle }
 
@@ -81,7 +84,7 @@ async function revisarRobots() {
     const limite = (s.intervalo_seg || 180) * 2 + 90
     const edad = (Date.now() - new Date(s.last_seen).getTime()) / 1000
     const m = minEnHorario(s.robot)
-    const carga = CARGA[s.robot]
+    const carga = CARGA[`${s.robot}@${s.centro}`] ?? CARGA[s.robot]   // digitadores: carga de su centro
     if (MANUALES.includes(s.robot)) continue          // manual: ver revisarGarantias
     if (edad > limite && m !== null && m * 60 >= limite) {
       if (carga && carga.n === 0) { log(`OK ${n} sin reportar desde ${horaGT(s.last_seen)}, pero sin pendientes (${carga.detalle})`); continue }
@@ -259,11 +262,18 @@ async function revisarCarga() {
     return { n: r.length, detalle: r.length ? `${r.length} correo(s) en cola` : 'Sin correos en cola' }
   })
   await intenta('digitadores', async () => {
+    // Además de la carga total, una por centro (digitadores@Nodus, digitadores@Zona 4…): el dungeon tiene un digitador por centro
+    const centros = (await q(CC, 'llamadas_centros?select=nombre').catch(() => [])).map((c) => centroDungeon(c.nombre))
+    const porCentro = (lista, vacio) => centros.forEach((c) => {
+      const n = lista ? lista.filter((x) => centroDungeon(x.llamadas_centros?.nombre) === c).length : 0
+      CARGA[`digitadores@${c}`] = { n, detalle: n ? `${n} llamada(s) de Garantía en la Bandeja (${c})` : vacio }
+    })
     const cfg = await q(CC, 'etiquetera_config?select=valor&clave=eq.robot_garantia_activo')
-    if (cfg?.[0]?.valor !== true) return { n: 0, detalle: 'Robot apagado en Administración' }
+    if (cfg?.[0]?.valor !== true) { porCentro(null, 'Robot apagado en Administración'); return { n: 0, detalle: 'Robot apagado en Administración' } }
     const est = await q(CC, 'llamadas_estados?select=id,nombre'), gar = est.find((e) => /^garant[ií]a$/i.test(e.nombre.trim()))
     if (!gar) return { n: null, detalle: 'No existe el estado Garantía' }
-    const r = await q(CC, `llamadas_actualizaciones?select=num_llamada&estado_id=eq.${gar.id}&digitado_en=is.null&garantia_id=is.null&pendiente_en=is.null&limit=200`)
+    const r = await q(CC, `llamadas_actualizaciones?select=num_llamada,llamadas_centros(nombre)&estado_id=eq.${gar.id}&digitado_en=is.null&garantia_id=is.null&pendiente_en=is.null&limit=200`)
+    porCentro(r, 'Sin Garantías en la Bandeja')
     return { n: r.length, detalle: r.length ? `${r.length} llamada(s) de Garantía en la Bandeja` : 'Sin Garantías en la Bandeja' }
   })
   await intenta('garantias', async () => {
