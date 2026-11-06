@@ -42,6 +42,7 @@ if ($crear) {
   $pass = Leer-Secreto '  Contrasena CSHP'
   $key = Leer-Secreto '  Supabase service_role key (Supabase > Settings > API)'
   $solo = Read-Host '  Solo estas citas, ej. 1000,1001 (Enter = todas)'
+  $pc = Read-Host '  Nombre de esta PC en el monitor, ej. PC Mostrador (Enter = nombre de Windows)'
   $contenido = @"
 AMBIENTE=$amb
 CSHP_QA_URL=https://tallerqa.hpc.com.gt/CSHP
@@ -50,8 +51,10 @@ CSHP_USUARIO=$usuario
 CSHP_PASSWORD='$pass'
 SUPABASE_URL=https://kkzovradqpptmsaakqlb.supabase.co
 SUPABASE_SERVICE_ROLE_KEY='$key'
+CSHP_CENTRO=Centro de Servicio Zona 4
 MAX_EQUIPOS=20
 SOLO_CITAS=$solo
+ROBOT_PC=$pc
 "@
   [IO.File]::WriteAllText((Join-Path $PSScriptRoot '.env'), $contenido, (New-Object Text.UTF8Encoding $false))
   Write-Host "[3/3] .env creado (tarea programada: $amb)" -ForegroundColor Green
@@ -59,6 +62,6 @@ SOLO_CITAS=$solo
 
 Write-Host ''
 Write-Host 'Listo. Siguientes pasos:' -ForegroundColor Cyan
-Write-Host '  npm.cmd run sync:buscar  (en la raiz del repo) prueba en QA sin crear nada'
-Write-Host '  npm.cmd run sync         (en la raiz del repo) crea llamadas en QA viendo el navegador'
-Write-Host '  programar-tarea.cmd      deja corriendo el worker cada 5 minutos'
+Write-Host '  npm.cmd run sync:buscar:prod  prueba en PRODUCCION sin crear nada (no presiona Aceptar)'
+Write-Host '  programar-tarea.cmd           deja corriendo el robot cada 5 minutos'
+Write-Host '  monitor.cmd                   pantalla en vivo de las corridas'
