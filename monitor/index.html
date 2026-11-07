@@ -125,7 +125,7 @@ const CENTROS = [
   { id: 'Huehuetenango', nombre: 'Huehuetenango' }, { id: 'Mazatenango', nombre: 'Mazatenango' }, { id: 'Petén', nombre: 'Petén' },
   { id: 'Jutiapa', nombre: 'Jutiapa' }, { id: 'El Rancho', nombre: 'El Rancho' }, { id: 'Morales', nombre: 'Morales' },
 ];
-const COMUN = 'Común';   // robots que atienden a todos los centros (hoy ninguno)
+const COMUN = 'Común';   // robots que no son de un centro de servicio (hoy: Catálogo Truper)
 const LS = [1, 2, 3, 4, 5, 6]; // lunes a sábado
 const ROBOTS = [
   /* El Jefe: revisa a los demás (jefe/revisar.mjs). global = su oficina sale en todos los niveles */
@@ -148,6 +148,9 @@ const ROBOTS = [
     ] },
   /* Se corre a mano (manual): si no reporta no es falla; si tiene NDC pendientes queda ESPERANDO a que lo corran */
   { id: 'garantias',   nombre: 'Garantías',   sala: 'garantia',   centro: 'Nodus',  manual: true, color: '#c084fc', intervalo: 1800 },
+  /* Catálogo Truper (truper/scraper.mjs): corre el día 1 de cada mes, 2–3 h. manual = entre meses no reportar no es falla.
+     El Jefe calcula su carga: 1 si falta el catálogo del mes, 0 si ya está (→ cafetería) */
+  { id: 'truper',      nombre: 'Catálogo Truper', sala: 'catalogo', centro: COMUN, manual: true, color: '#f97316', intervalo: 600 },
   // { id: 'mimo', nombre: 'MiMo', sala: 'recepcion', color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
 ];
 /* Flujos reales entre robots: la misma llamada pasa de un robot al otro.
@@ -1172,6 +1175,41 @@ function salaGarantia(q, s, est, t, col) {
   return r;
 }
 
+/* Catálogo Truper: estante con cajas → compu (lee la ficha) → hoja de Excel que se llena con el avance de la corrida */
+function salaCatalogo(q, s, est, t, col) {
+  const ES = [30, 80], PC = [84, 80], XL = [152, 80];
+  // estante con cajas de las marcas (Truper, Pretul, Fiero, Foset, Hermex, Klintek, Volteck)
+  const MARCAS = ['#f97316', '#2563eb', '#dc2626', '#16a34a', '#facc15', '#7c3aed', '#0ea5e9'];
+  px(10, 34, 42, 44, '#5c4128'); px(12, 36, 38, 40, '#3b2a1a');
+  for (let f = 0; f < 3; f++) {
+    px(12, 48 + f * 13, 38, 2, '#7c5a3a');
+    for (let i = 0; i < 4; i++) { const c = MARCAS[(f * 4 + i) % MARCAS.length]; px(14 + i * 9, 39 + f * 13, 7, 9, c); px(14 + i * 9, 41 + f * 13, 7, 1, 'rgba(255,255,255,.5)'); }
+  }
+  // compu
+  escritorio(66, 62, 38); compu(75, 46, est, t, true);
+  // hoja de Excel en la pared: las filas se llenan con el avance (Fichas 4210/15191)
+  const m = /(\d[\d,]*)\s*\/\s*(\d[\d,]*)/.exec(s?.detalle || ''), n = v => +String(v).replace(/,/g, '');
+  const cg = carga.get('truper'), alDia = est !== 'trabajando' && cg && cg.pendientes === 0;
+  const frac = est === 'trabajando' && m ? Math.min(1, n(m[1]) / Math.max(1, n(m[2]))) : alDia ? 1 : 0;
+  px(130, 30, 46, 34, '#f8fafc'); px(130, 30, 46, 4, '#15803d'); texto('XLSX', 153, 33, 3, '#fff', true);
+  for (let i = 0; i < 6; i++) px(132, 36 + i * 4, 42, 1, '#cbd5e1');
+  px(144, 34, 1, 28, '#cbd5e1'); px(160, 34, 1, 28, '#cbd5e1');
+  const filas = Math.round(frac * 6);
+  for (let i = 0; i < filas; i++) { px(133, 37 + i * 4, 10, 2, '#86efac'); px(146, 37 + i * 4, 13, 2, '#bbf7d0'); px(162, 37 + i * 4, 11, 2, '#dcfce7'); }
+  // barra de avance
+  px(130, 66, 46, 5, '#1f2937'); px(131, 67, Math.round(44 * frac), 3, frac >= 1 ? '#22c55e' : col);
+  texto(est === 'trabajando' && m ? `${Math.floor(frac * 100)}%` : alDia ? 'AL DÍA' : cg?.pendientes ? 'FALTA EL MES' : '—', 153, 78, 3, alDia ? '#86efac' : '#fed7aa', true);
+  // letrero
+  px(58, 28, 56, 12, '#1f2937'); px(58, 28, 56, 2, col); texto('CATÁLOGO', 86, 37, 4, '#fed7aa', true);
+  let r = { x: PC[0], y: PC[1], accion: 'pie', f: 0 };
+  if (est === 'trabajando') r = ruta(t + q.fase, PC, [
+    { ir: ES, ms: 1300 }, { hacer: 'tomar', ms: 600 }, { ir: PC, ms: 1300, carga: 'papel' }, { hacer: 'teclear', ms: 2400 },
+    { ir: XL, ms: 1400, carga: 'papel' }, { hacer: 'archivar', ms: 700 }, { ir: PC, ms: 1400 },
+  ]);
+  if (r.accion === 'archivar') px(133, 37 + Math.min(5, filas) * 4, 40, 2, '#4ade80');
+  return r;
+}
+
 function salaGenerica(q, s, est, t) {
   escritorio(70, 60, 40); compu(80, 44, est, t, true);
   return { x: 90, y: 78, accion: est === 'trabajando' ? 'teclear' : 'pie', f: 0 };
@@ -1236,6 +1274,7 @@ function dibujarCuarto(q, t) {
   else if (m.sala === 'jefatura') r = salaJefatura(q, s, est, t);
   else if (m.sala === 'cafeteria') r = salaCafeteria(q, t);
   else if (m.sala === 'garantia') r = salaGarantia(q, s, est, t, m.color);
+  else if (m.sala === 'catalogo') r = salaCatalogo(q, s, est, t, m.color);
   else r = salaGenerica(q, s, est, t);
 
   if (fuera) {   // letrero: se fue a la cafetería
@@ -1342,11 +1381,11 @@ function renderCards() {
     const rs = resumen.get(k) || { ok_hoy: 0, errores_hoy: 0 }, cg = cargaDe(k);
     const p = prevEst.get(k); if (p && p !== e && (e === 'error' || e === 'caido')) sonar(e); prevEst.set(k, e);
     const det = e === 'caido' ? `Sin reportar desde ${s ? hhmm(s.last_seen) : '—'} (esperado cada ${Math.round((s?.intervalo_seg || 180) / 60)} min)`
-      : m.manual && e === 'esperando' && cg?.pendientes > 0 ? `${cg.pendientes} NDC por sincronizar · se corre a mano (correr.cmd)`
+      : m.manual && e === 'esperando' && cg?.pendientes > 0 ? (id === 'garantias' ? `${cg.pendientes} NDC por sincronizar · se corre a mano (correr.cmd)` : cg.detalle)
       : e === 'libre' ? `Sin pendientes${cg?.detalle ? ' (' + cg.detalle + ')' : ''} · descansando en la cafetería`
       : e === 'sindatos' ? 'Aún no reporta al monitor'
       : e === 'durmiendo' ? `Fuera de horario (${m.horario.desde}–${m.horario.hasta})${s ? ' · última: ' + (s.detalle || '') : ''}`
-      : (s?.detalle || '') + (s?.llamada ? (m.sala === 'correo' ? ' · Ref. ' : ' · Llamada ') + s.llamada : '') + (enCafe(k) ? ' · en la cafetería' : '') + (cg && cg.pendientes > 0 && e !== 'trabajando' ? ` · ${cg.pendientes} pendiente(s)` : '');
+      : (s?.detalle || '') + (s?.llamada ? (m.sala === 'correo' ? ' · Ref. ' : m.sala === 'catalogo' ? ' · Código ' : ' · Llamada ') + s.llamada : '') + (enCafe(k) ? ' · en la cafetería' : '') + (cg && cg.pendientes > 0 && e !== 'trabajando' ? ` · ${cg.pendientes} pendiente(s)` : '');
     return `<article class="card ${e}" data-k="${esc(k)}">
       <div class="row"><span class="name" style="color:${m.color}">${esc(nombreDe(k))}</span><span class="badge" style="background:${ESTADOS[e].c}">${ESTADOS[e].txt}</span></div>
       <div class="row meta"><span>${esc(m.global ? 'Todos los centros' : centroDe(k))} · PC: ${esc(String(pc).replace(/ · .*$/, ''))}${s?.version ? ' · v' + esc(s.version) : ''}</span><span>${hace(s?.last_seen)}</span></div>
@@ -1503,6 +1542,7 @@ function initDemo() {
     { robot: 'digitadores', pc: 'HPCLPJCOTUC · Nodus', centro: 'Nodus', estado: 'trabajando', llamada: 'LLS21-556758', detalle: 'Procesando', intervalo_seg: 180 },
     { robot: 'correos',     pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: '89DC279B', detalle: 'Enviando autoconsumo_solicitud', intervalo_seg: 120 },
     { robot: 'garantias',   pc: 'HPCPCGARANTIAS', estado: 'trabajando', llamada: 'LLS21-559900', detalle: 'NDC cliente C1042', intervalo_seg: 1800 },
+    { robot: 'truper',      pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: '17534', detalle: 'Fichas 9840/15191 · 0 errores', intervalo_seg: 600 },
     { robot: 'digitadores', pc: 'HPCLPJCOTUC · Zona 4', centro: 'Zona 4', estado: 'esperando', detalle: '2 digitadas', intervalo_seg: 180 },
     { robot: 'digitadores', pc: 'HPCLPJCOTUC · Cobán', centro: 'Cobán', estado: 'esperando', detalle: 'Sin llamadas de Garantía en este centro', intervalo_seg: 180 },
   ];

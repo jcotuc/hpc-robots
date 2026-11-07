@@ -39,6 +39,11 @@ Get-Content logs\resumen-AAAA-MM-DD.log
 1. Plantilla en `plantillas.mjs`.
 2. Trigger en Supabase que llame `encolar_correo('tipo', array['a@hpc.com.gt'], jsonb_build_object(...), referencia, clave)`.
 
+## Alertas
+Si un trigger no puede armar un correo (p. ej. Lovable cambió una columna) o aparece un tipo de notificación nuevo,
+llega un correo **[ALERTA correos]** a `correos_config.alertas_a` (máx. 1 por hora por motivo). La app nunca se bloquea.
+ConsumosCS `AGENTS.md` le indica a Lovable qué no debe cambiar.
+
 ## Reintentos
 Falla → vuelve a `pendiente` hasta `MAX_INTENTOS`, luego `error` (rojo en el dungeon).
 Reintentar: `update correos_cola set estado='pendiente', intentos=0 where estado='error';`

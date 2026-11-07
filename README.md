@@ -8,6 +8,7 @@
 | `mimo\` | Crea llamadas desde MiMO | "HPC MiMO CSHP" · L–S 5:55–20:25 · cada 10 min | kkzo (citas/MiMo) |
 | `correos\` | Envía notificaciones (autoconsumos…) por M365 | "HPC Correos" · L–S 7:00–20:00 · cada 2 min | ConsumosCS + monitor |
 | `garantias\` | Garantías manuales NDC → llamada + TLS - NC Autorizada | **Manual** (correr.cmd) | kkzo (garantías) |
+| `truper\` | Catálogo Truper → Excel/CSV/JSON (sin precios) | "HPC Truper" · día 1 de cada mes 2:00 · 2–3 h | solo monitor |
 | `shared\` | Código común (`monitor.mjs`) | — | — |
 | `monitor\` | Dungeon de robots (Vercel, Root Directory = `monitor`) + SQL | — | kkzo |
 

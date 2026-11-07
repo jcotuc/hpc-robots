@@ -36,9 +36,9 @@ const HORARIOS = {
   citas: { dias: LS, desde: '05:55', hasta: '20:25' }, guias: { dias: LS, desde: '07:00', hasta: '20:00' },
   digitadores: { dias: LS, desde: '07:00', hasta: '18:00' }, correos: { dias: LS, desde: '07:00', hasta: '20:00' },
 }
-const NOMBRES = { citas: 'Citas', guias: 'Guías', digitadores: 'Digitadores', correos: 'Correos', garantias: 'Garantías' }
+const NOMBRES = { citas: 'Citas', guias: 'Guías', digitadores: 'Digitadores', correos: 'Correos', garantias: 'Garantías', truper: 'Catálogo Truper' }
 /* Robots que se corren a mano: si no reportan no es falla; solo importa si tienen pendientes esperando */
-const MANUALES = ['garantias']
+const MANUALES = ['garantias', 'truper']   // truper: corre solo el día 1 de cada mes (ver revisarTruper)
 const GARANTIA_ESPERA_MIN = Number(E.GARANTIA_ESPERA_MIN || 60)
 
 const fechaGT = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' })
@@ -281,6 +281,14 @@ async function revisarCarga() {
     const r = await q(KK, 'garantias_manuales?select=id,created_at&sync_status=eq.pending&record_status=eq.NDC&deleted=eq.false&limit=200')
     return { n: r.length, detalle: r.length ? `${r.length} NDC por sincronizar (se corre a mano)` : 'Sin NDC pendientes', masVieja: r.map((x) => x.created_at).sort()[0] }
   })
+  await intenta('truper', async () => {
+    // Catálogo Truper (mensual): pendiente = 1 mientras no se haya descargado el catálogo de este mes
+    const s = (await q(KK, 'robot_status?select=estado,detalle,last_seen&robot=eq.truper'))[0]
+    const mes = fechaGT().slice(0, 7), mesDe = (d) => new Date(d).toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' }).slice(0, 7)
+    if (s?.estado === 'trabajando' && Date.now() - new Date(s.last_seen).getTime() < TRUPER_DETENIDO_MIN * 60000) return { n: 1, detalle: `Descargando: ${s.detalle || ''}` }
+    if (s?.estado === 'esperando' && mesDe(s.last_seen) === mes) return { n: 0, detalle: `Catálogo de ${mes} descargado` }
+    return { n: 1, detalle: `Falta descargar el catálogo de ${mes} (tarea "HPC Truper", día 1 a las 2:00)` }
+  })
   await intenta('guias', async () => {
     if (minEnHorario('guias') === null) return { n: null, detalle: 'Fuera de horario: no se revisó CSHP' }
     if (cshpCaido) return { n: null, detalle: 'CSHP no responde: no se pudo revisar' }
@@ -290,6 +298,23 @@ async function revisarCarga() {
   Object.entries(CARGA).forEach(([r, c]) => log(`CARGA ${r}: ${c.n ?? '?'} · ${c.detalle}`))
   if (PROD) await q(KK, 'robot_carga?on_conflict=robot', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
     body: Object.entries(CARGA).map(([robot, c]) => ({ robot, pendientes: c.n, detalle: c.detalle, revisado_en: new Date().toISOString() })) })
+  return []
+}
+
+/* Catálogo Truper (mensual): nada es delicado → todo en severidad media (no manda correo) */
+const TRUPER_DETENIDO_MIN = Number(E.TRUPER_DETENIDO_MIN || 30)
+async function revisarTruper() {
+  const s = (await q(KK, 'robot_status?select=*&robot=eq.truper'))[0]
+  const base = { robot: 'truper', pc: s?.pc, centro: s?.centro, severidad: 'media' }
+  const edadMin = s ? (Date.now() - new Date(s.last_seen).getTime()) / 60000 : Infinity
+  if (s?.estado === 'trabajando' && edadMin >= TRUPER_DETENIDO_MIN)
+    return [{ ...base, clave: 'truper:detenido', titulo: 'Catálogo Truper se detuvo a medias',
+      detalle: `Último avance a las ${horaGT(s.last_seen)}: ${s.detalle || '—'}. La PC ${s.pc} se apagó, suspendió o se cerró la corrida. Correr truper\\correr.cmd: retoma donde iba.` }]
+  if (s?.estado === 'error')
+    return [{ ...base, clave: 'truper:error', titulo: 'Catálogo Truper terminó con error',
+      detalle: `${corto(s.ultimo_error || s.detalle, 400)}. Volver a correr truper\\correr.cmd (reintenta solo lo que falló); si se repite, Truper cambió su sitio.` }]
+  if (CARGA.truper?.n && !/^Descargando/.test(CARGA.truper.detalle) && +fechaGT().slice(8) >= 3)
+    return [{ ...base, clave: 'truper:pendiente', titulo: 'Falta descargar el catálogo Truper de este mes', detalle: `${CARGA.truper.detalle}. Revisar que la tarea exista en la PC o correr truper\\correr.cmd.` }]
   return []
 }
 
@@ -310,7 +335,7 @@ async function revisarGarantias() {
   return out
 }
 
-const REVISIONES = { cshp: revisarCshp, carga: revisarCarga, garantias: revisarGarantias, robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores, sku: revisarSku }
+const REVISIONES = { cshp: revisarCshp, carga: revisarCarga, garantias: revisarGarantias, truper: revisarTruper, robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores, sku: revisarSku }
 
 /* =============== Hallazgos: abrir / actualizar / cerrar =============== */
 async function avisar(h, abierto) {

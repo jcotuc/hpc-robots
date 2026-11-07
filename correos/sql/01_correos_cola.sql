@@ -63,6 +63,27 @@ language sql security definer set search_path = public as $$
   returning c.*;
 $$;
 
+-- 5) Configuración y alertas: si un trigger de correos falla o aparece un tipo de notificación
+--    que no conoce, se manda un correo a 'alertas_a' (máx. 1 por hora por motivo).
+create table if not exists public.correos_config (clave text primary key, valor text not null);
+alter table public.correos_config enable row level security;
+insert into public.correos_config (clave, valor) values ('alertas_a', 'jcotuc@hpc.com.gt') on conflict (clave) do nothing;
+-- cambiar destinatario: update correos_config set valor = 'otro@hpc.com.gt' where clave = 'alertas_a';
+
+create or replace function public.correos_alerta(p_origen text, p_mensaje text, p_detalle jsonb default '{}')
+returns void
+language plpgsql security definer set search_path = public as $$
+declare v_para text;
+begin
+  select valor into v_para from public.correos_config where clave = 'alertas_a';
+  perform public.encolar_correo('sistema_alerta', array[v_para],
+    jsonb_build_object('origen', p_origen, 'mensaje', p_mensaje, 'detalle', p_detalle, 'fecha', now()),
+    p_origen, 'alerta:' || p_origen || ':' || left(md5(coalesce(p_mensaje, '')), 8) || ':' || to_char(now() at time zone 'America/Guatemala', 'YYYYMMDDHH24'));
+exception when others then
+  raise warning 'correos_alerta: %', sqlerrm;  -- la alerta tampoco bloquea nada
+end $$;
+
+revoke execute on function public.correos_alerta(text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.encolar_correo(text, text[], jsonb, text, text, text[]) from public, anon, authenticated;
 revoke execute on function public.correos_tomar(int) from public, anon, authenticated;
 grant  execute on function public.correos_tomar(int) to service_role;

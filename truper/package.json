@@ -1,0 +1,15 @@
+{
+  "name": "hpc-truper",
+  "private": true,
+  "type": "module",
+  "description": "Robot Catálogo Truper: extrae todos los productos de truper.com/CatVigente a Excel, CSV y JSON",
+  "scripts": {
+    "auto": "node --env-file=.env scraper.mjs",
+    "nuevo": "node --env-file=.env scraper.mjs --nuevo",
+    "prueba": "node --env-file=.env scraper.mjs --limit 20"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "exceljs": "^4.4.0"
+  }
+}

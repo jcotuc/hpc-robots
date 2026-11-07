@@ -111,6 +111,17 @@ PLANTILLAS.garantia_resuelto = (d) => {
   }
 }
 
+/* ---------- Alerta del propio sistema de correos (a quien esté en correos_config.alertas_a) ---------- */
+PLANTILLAS.sistema_alerta = (d) => ({
+  asunto: `[ALERTA correos] ${d.origen ?? ''}: ${String(d.mensaje ?? '').slice(0, 80)}`,
+  html: marco('Falla en los correos automáticos', `
+    <p style="margin:0 0 14px">${etiqueta('ALERTA', '#b91c1c')}</p>
+    <p style="margin:0 0 16px">Un correo de <b>${esc(d.origen)}</b> no se pudo generar. La app sigue funcionando, pero ese aviso no salió por correo (sí está en la campanita).</p>
+    <table role="presentation" cellpadding="0" cellspacing="0">${filas([['Motivo', d.mensaje], ['Fecha', d.fecha && fecha(d.fecha)],
+      ...Object.entries(d.detalle || {}).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : v])])}</table>
+    <p style="margin:16px 0 0;color:#6b7280">Causa típica: un cambio en Lovable a la tabla <i>notifications</i>, a los tipos de notificación o a columnas de autoconsumos / cambios_garantia. Revisar <i>sql\\02</i> y <i>sql\\03</i> en hpc-robots\\correos.</p>`),
+})
+
 /** Si la fila trae asunto/html propios, se respetan. */
 export function armarCorreo(fila) {
   const p = PLANTILLAS[fila.tipo]

@@ -39,7 +39,14 @@ declare
   v_datos  jsonb;
   v_tipo   text;
 begin
-  if new.app <> 'autoconsumos' or new.tipo not in ('auto_pendiente', 'auto_resuelto') then return new; end if;
+  if new.app <> 'autoconsumos' then return new; end if;
+  -- tipos conocidos que NO llevan correo (solo campanita)
+  if new.tipo in ('auto_autorizado', 'auto_pedido_creado') then return new; end if;
+  if new.tipo not in ('auto_pendiente', 'auto_resuelto') then
+    perform public.correos_alerta('autoconsumos', 'Tipo de notificación nuevo sin correo: ' || new.tipo,
+      jsonb_build_object('tipo', new.tipo, 'notificacion', new.id));
+    return new;
+  end if;
 
   begin
     v_pedido := new.entity_id::uuid;
@@ -66,11 +73,16 @@ begin
       left join public.lugares l on l.id = a.lugar_id
       left join public.tipologias t on t.id = a.tipologia_id
      where a.pedido_id = v_pedido;
+    if v_datos->'items' is null or jsonb_typeof(v_datos->'items') <> 'array' then
+      raise exception 'autoconsumo % no existe', new.entity_id;
+    end if;
 
     perform public.encolar_correo(v_tipo, array[new.recipient_email], v_datos,
                                   v_datos->>'numero', 'notif:' || new.id::text);
   exception when others then
     raise warning 'correo_desde_notificacion (%): %', new.id, sqlerrm;  -- nunca bloquea la app
+    perform public.correos_alerta('autoconsumos', 'No se pudo armar el correo: ' || sqlerrm,
+      jsonb_build_object('tipo', new.tipo, 'notificacion', new.id, 'para', new.recipient_email, 'pedido', new.entity_id));
   end;
   return new;
 end $$;

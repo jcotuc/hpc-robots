@@ -6,7 +6,7 @@
 --   gar_taller         → ya existe: jefe(s) de taller del centro, para visto bueno
 --   gar_pendiente      → ya existe: aprobador regional (o especial si el cambio > Q3,000)
 --   gar_por_digitador  → ya existe: digitadores de garantía, cuando se autoriza
---   gar_resuelto       → NUEVO: al solicitante cuando se autoriza o rechaza (también en la campanita)
+--   gar_resuelto       → NUEVO: al solicitante cuando se autoriza o rechaza (campanita); CORREO solo si es rechazo
 -- Si algo falla aquí NO se bloquea la garantía (solo WARNING en logs).
 -- ============================================================
 
@@ -43,11 +43,18 @@ declare
   v_tipo   text;
   v_centro text;
 begin
-  if new.app <> 'garantia' or new.tipo not in ('gar_taller', 'gar_pendiente', 'gar_por_digitador', 'gar_resuelto') then return new; end if;
+  if new.app <> 'garantia' then return new; end if;
+  if new.tipo not in ('gar_taller', 'gar_pendiente', 'gar_por_digitador', 'gar_resuelto') then
+    perform public.correos_alerta('garantia', 'Tipo de notificación nuevo sin correo: ' || new.tipo,
+      jsonb_build_object('tipo', new.tipo, 'notificacion', new.id));
+    return new;
+  end if;
 
   begin
     select * into g from public.cambios_garantia where id = new.entity_id::uuid;
-    if not found then return new; end if;
+    if not found then raise exception 'cambios_garantia % no existe', new.entity_id; end if;
+    -- al solicitante solo se le manda correo si lo RECHAZAN (el autorizado queda solo en la campanita)
+    if new.tipo = 'gar_resuelto' and g.estado <> 'rechazado' then return new; end if;
     select nombre into v_centro from public.lugares where id = g.lugar_id;
     v_tipo := case new.tipo when 'gar_taller' then 'garantia_taller'
                             when 'gar_pendiente' then 'garantia_pendiente'
@@ -77,6 +84,8 @@ begin
                                   v_datos->>'numero', 'notif:' || new.id::text);
   exception when others then
     raise warning 'correo_desde_notificacion_garantia (%): %', new.id, sqlerrm;  -- nunca bloquea la app
+    perform public.correos_alerta('garantia', 'No se pudo armar el correo: ' || sqlerrm,
+      jsonb_build_object('tipo', new.tipo, 'notificacion', new.id, 'para', new.recipient_email, 'garantia', new.entity_id));
   end;
   return new;
 end $$;
