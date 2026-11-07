@@ -3,6 +3,13 @@
 Dueño: Joshua Cotuc (Supervisor de Proyectos, HPC Guatemala). Respuestas en español, compactas y directas.
 Comandos PowerShell con rutas completas (`C:\Users\jcotuc\source\repos\...`), sin instalaciones que pidan admin.
 
+## PCs de Joshua
+| PC | Usuario Windows | Repo | Uso |
+|---|---|---|---|
+| Principal (HPCLPJCOTUC) | `jcotuc` | `C:\Users\jcotuc\source\repos\hpc-robots` | Corre en PROD: citas, digitadores, correos, jefe |
+| Secundaria | `joshu` | `C:\Users\joshu\source\repos\hpc-robots` | Revisar código; robots solo en QA / `--solo-listar` |
+Usar la ruta de la PC donde se esté trabajando. Mantener sincronizado con `git pull` / `git push`.
+
 ## Qué es
 Repo maestro de los robots que trabajan contra **CSHP** (`https://taller.hpc.com.gt/CSHP`, QA: `tallerqa`) con Playwright,
 más el **dungeon** (dashboard pixel-art en Vercel: https://hpc-robots-monitor.vercel.app/, `?demo` = datos simulados)
