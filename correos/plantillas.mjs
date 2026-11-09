@@ -60,6 +60,16 @@ export const PLANTILLAS = {
   },
 }
 
+PLANTILLAS.autoconsumo_teleservicio = (d) => ({
+  asunto: `Autoconsumo ${d.numero ?? ''} autorizado — crear número de pedido — ${d.centro ?? ''}`.replace(/\s+/g, ' ').trim(),
+  html: marco('Autoconsumo autorizado: crear número de pedido', `
+    <p style="margin:0 0 14px">${etiqueta('POR CREAR PEDIDO', '#2563eb')}</p>
+    <p style="margin:0 0 16px">Este autoconsumo ya fue autorizado${d.autorizador ? ` por <b>${esc(d.autorizador)}</b>` : ''} y está listo para que se cree su número de pedido.</p>
+    <table role="presentation" cellpadding="0" cellspacing="0">${filas([['No.', d.numero], ['Solicitante', d.solicitante], ['Centro', d.centro], ['Tipología', d.tipologia], ['Llamada', d.llamada], ['Autorizado', d.resuelto_en && fecha(d.resuelto_en)], ['Comentario', d.comentario], ['Total', d.total]])}</table>
+    ${tablaItems(d.items)}
+    ${boton('Ir a Teleservicio', d.url || (APP_URL && `${APP_URL}${d.ruta || '/autoconsumos/teleservicio'}`))}`),
+})
+
 /* ---------- Cambios por garantía / Notas de crédito ---------- */
 const producto = (sku, desc) => [sku, desc].filter(Boolean).join(' — ')
 const foto = (url) => !url ? '' : `

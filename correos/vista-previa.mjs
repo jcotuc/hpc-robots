@@ -19,7 +19,8 @@ Object.assign(ejemplos, {
   garantia_resuelto_ok: { ...gar, resultado: 'autorizado', autorizador: 'supervisor@hpc.com.gt', resuelto_en: new Date().toISOString() },
   nc_pendiente: { ...nc }, nc_resuelto_rechazo: { ...nc, resultado: 'rechazado', autorizador: 'supervisor@hpc.com.gt', resuelto_en: new Date().toISOString(), motivo_rechazo: 'La foto no muestra la falla.' },
 })
-const TIPO = { garantia_resuelto_ok: 'garantia_resuelto', nc_pendiente: 'garantia_pendiente', nc_resuelto_rechazo: 'garantia_resuelto' }
+Object.assign(ejemplos, { autoconsumo_teleservicio: { numero: '3B7529D4', solicitante: 'Técnico Ejemplo', centro: 'HPCS012 Zona 12', tipologia: 'Taller', autorizador: 'autorizador@hpc.com.gt', resuelto_en: new Date().toISOString(), total: 'Q 185.00', items, url: '#' } })
+const TIPO = { autoconsumo_teleservicio: 'autoconsumo_teleservicio', garantia_resuelto_ok: 'garantia_resuelto', nc_pendiente: 'garantia_pendiente', nc_resuelto_rechazo: 'garantia_resuelto' }
 mkdirSync('vista-previa', { recursive: true })
 for (const [nombre, datos] of Object.entries(ejemplos)) {
   const tipo = TIPO[nombre] || (nombre.startsWith('garantia') ? nombre : nombre.startsWith('autoconsumo_solicitud') ? 'autoconsumo_solicitud' : 'autoconsumo_resuelto')

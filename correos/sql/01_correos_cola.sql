@@ -47,6 +47,35 @@ begin
   return v_id;
 end $$;
 
+-- 3b) Encolar AGRUPANDO: mismo p_grupo (ej. 'notif:gar_por_digitador:<id>') = UN solo correo con todos en "Para".
+--     Las notificaciones de un mismo evento se insertan en la misma transacción, así que el robot
+--     nunca toma el correo a medias. Si ese correo ya se envió, el destinatario tardío va en uno aparte.
+create or replace function public.encolar_correo_grupo(
+  p_tipo text, p_para text[], p_datos jsonb, p_referencia text, p_grupo text, p_extra text default null
+) returns bigint
+language plpgsql security definer set search_path = public as $$
+declare v_id bigint;
+begin
+  p_para := array(select distinct lower(trim(x)) from unnest(p_para) x where x ~ '^[^@\s]+@[^@\s]+\.[^@\s]+$');
+  if coalesce(array_length(p_para, 1), 0) = 0 then return null; end if;
+
+  update public.correos_cola c
+     set para = array(select distinct x from unnest(c.para || p_para) x order by x)
+   where c.clave = p_grupo and c.estado = 'pendiente'
+  returning c.id into v_id;
+  if v_id is not null then return v_id; end if;
+
+  begin
+    insert into public.correos_cola (tipo, para, datos, referencia, clave)
+    values (p_tipo, p_para, coalesce(p_datos, '{}'), p_referencia, p_grupo)
+    returning id into v_id;
+  exception when unique_violation then
+    -- el correo del grupo ya salió (o se está enviando): este destinatario va aparte
+    v_id := public.encolar_correo(p_tipo, p_para, p_datos, p_referencia, p_grupo || ':' || coalesce(p_extra, md5(random()::text)));
+  end;
+  return v_id;
+end $$;
+
 -- 4) El robot toma hasta p_max correos. Si uno quedó "enviando" más de 10 min (robot se cayó), se reintenta.
 create or replace function public.correos_tomar(p_max int default 20)
 returns setof public.correos_cola
@@ -86,6 +115,7 @@ end $$;
 revoke execute on function public.correos_alerta(text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.encolar_correo(text, text[], jsonb, text, text, text[]) from public, anon, authenticated;
 revoke execute on function public.correos_tomar(int) from public, anon, authenticated;
+revoke execute on function public.encolar_correo_grupo(text, text[], jsonb, text, text, text) from public, anon, authenticated;
 grant  execute on function public.correos_tomar(int) to service_role;
 
 -- Útiles:

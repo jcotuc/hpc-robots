@@ -80,8 +80,9 @@ begin
       'foto',         coalesce(g.media_url, g.fotos_urls[1]),
       'ruta',         new.link);
 
-    perform public.encolar_correo(v_tipo, array[new.recipient_email], v_datos,
-                                  v_datos->>'numero', 'notif:' || new.id::text);
+    -- un correo por evento con todos los destinatarios en "Para"
+    perform public.encolar_correo_grupo(v_tipo, array[new.recipient_email], v_datos,
+                                        v_datos->>'numero', 'notif:' || new.tipo || ':' || new.entity_id, new.id::text);
   exception when others then
     raise warning 'correo_desde_notificacion_garantia (%): %', new.id, sqlerrm;  -- nunca bloquea la app
     perform public.correos_alerta('garantia', 'No se pudo armar el correo: ' || sqlerrm,

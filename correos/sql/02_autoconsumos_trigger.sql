@@ -3,6 +3,7 @@
 --
 -- Reusa las notificaciones que la app ya genera (tabla notifications, la campanita):
 --   auto_pendiente  → ya existe: aprobadores según región / especial (Proyecto o > Q2,000)
+--   auto_autorizado → ya existe: usuarios con rol teleservicio, para crear el número de pedido
 --   auto_resuelto   → NUEVO: al solicitante cuando su pedido se autoriza o rechaza (también sale en la campanita)
 -- Cada notificación de esos tipos genera un correo en correos_cola. Si algo falla aquí,
 -- NO se bloquea el autoconsumo (solo queda un WARNING en los logs de Postgres).
@@ -41,8 +42,8 @@ declare
 begin
   if new.app <> 'autoconsumos' then return new; end if;
   -- tipos conocidos que NO llevan correo (solo campanita)
-  if new.tipo in ('auto_autorizado', 'auto_pedido_creado') then return new; end if;
-  if new.tipo not in ('auto_pendiente', 'auto_resuelto') then
+  if new.tipo in ('auto_pedido_creado') then return new; end if;
+  if new.tipo not in ('auto_pendiente', 'auto_resuelto', 'auto_autorizado') then
     perform public.correos_alerta('autoconsumos', 'Tipo de notificación nuevo sin correo: ' || new.tipo,
       jsonb_build_object('tipo', new.tipo, 'notificacion', new.id));
     return new;
@@ -50,7 +51,9 @@ begin
 
   begin
     v_pedido := new.entity_id::uuid;
-    v_tipo := case new.tipo when 'auto_pendiente' then 'autoconsumo_solicitud' else 'autoconsumo_resuelto' end;
+    v_tipo := case new.tipo when 'auto_pendiente' then 'autoconsumo_solicitud'
+                            when 'auto_autorizado' then 'autoconsumo_teleservicio'
+                            else 'autoconsumo_resuelto' end;
 
     -- datos del pedido (cabecera = primera fila, items = todas)
     select jsonb_build_object(
@@ -77,8 +80,9 @@ begin
       raise exception 'autoconsumo % no existe', new.entity_id;
     end if;
 
-    perform public.encolar_correo(v_tipo, array[new.recipient_email], v_datos,
-                                  v_datos->>'numero', 'notif:' || new.id::text);
+    -- un correo por evento con todos los destinatarios en "Para"
+    perform public.encolar_correo_grupo(v_tipo, array[new.recipient_email], v_datos,
+                                        v_datos->>'numero', 'notif:' || new.tipo || ':' || new.entity_id, new.id::text);
   exception when others then
     raise warning 'correo_desde_notificacion (%): %', new.id, sqlerrm;  -- nunca bloquea la app
     perform public.correos_alerta('autoconsumos', 'No se pudo armar el correo: ' || sqlerrm,
