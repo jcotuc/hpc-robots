@@ -23,6 +23,8 @@ const REMITENTE = (process.env.CORREO_REMITENTE || '').trim()
 const REDIRIGIR_A = (process.env.REDIRIGIR_A || '').trim()             // QA: todo va aquí
 const MAX = Number(process.env.MAX_CORREOS || 20)
 const MAX_INTENTOS = Number(process.env.MAX_INTENTOS || 5)
+// Errores de Outlook (no del correo): perfil sin archivo de datos, Outlook colgado o cerrándose, COM sin responder
+const OUTLOOK_CAIDO = /archivo de datos|data file|0x800706BE|0x80010001|0x80080005|0x800401E3|procedimiento remoto|remote procedure|Command failed|ComObject|COM class|Outlook\.Application/i
 const INTERVALO_SEG = Number(process.env.INTERVALO_SEG || 120)
 
 const fechaGT = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' })
@@ -66,7 +68,8 @@ function enviarOutlook(correo) {
     (e, out, err) => {
       try { unlinkSync(archivo) } catch {}
       if (e || !/ENVIADO/.test(out)) {
-        const msg = (String(out).match(/ERROR: (.*)/)?.[1] || String(err).trim().split(/\r?\n/).find(Boolean) || e?.message || '').trim()
+        const msg = e?.killed ? 'Outlook no respondió en 60 s (¿hay una ventana de aviso de Outlook abierta o sigue cargando?)'
+          : (String(out).match(/ERROR: (.*)/)?.[1] || String(err).trim().split(/\r?\n/).find(Boolean) || e?.message || '').trim()
         return mal(new Error(`Outlook: ${msg}`))
       }
       ok()
@@ -148,6 +151,14 @@ async function main() {
         ok++; mon.ok(ref, `${f.tipo} → ${f.para.join(', ')}`); resumen(`OK ${f.tipo} ${ref} → ${f.para.join(', ')}`)
       } catch (e) {
         fallo++
+        // Outlook caído / sin perfil: no es culpa del correo. No gasta intentos y se corta la corrida.
+        if (OUTLOOK_CAIDO.test(String(e?.message || e))) {
+          const pendientes = filas.slice(filas.indexOf(f)).map((x) => x.id)
+          await sb.from('correos_cola').update({ estado: 'pendiente', ultimo_error: corto(e) }).in('id', pendientes)
+          resumen(`ERROR OUTLOOK NO DISPONIBLE: ${corto(e)} · ${pendientes.length} correo(s) esperan la siguiente corrida`)
+          mon.error(`Outlook no disponible: ${corto(e)}`)
+          break
+        }
         const intentos = f.intentos + 1
         const final = intentos >= MAX_INTENTOS
         await sb.from('correos_cola').update({ estado: final ? 'error' : 'pendiente', intentos, ultimo_error: corto(e) }).eq('id', f.id)

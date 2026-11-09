@@ -6,6 +6,9 @@ $ErrorActionPreference = 'Stop'
 try {
 $c = Get-Content -LiteralPath $Archivo -Raw -Encoding UTF8 | ConvertFrom-Json
 $o = New-Object -ComObject Outlook.Application
+# Asegura que el perfil de Outlook este cargado (si Outlook estaba cerrado, COM lo abre sin sesion)
+$ns = $o.GetNamespace('MAPI')
+try { $ns.Logon('', '', $false, $false) } catch { }
 $m = $o.CreateItem(0)
 $m.To = (@($c.para) -join ';')
 if ($c.cc) { $m.CC = (@($c.cc) -join ';') }
