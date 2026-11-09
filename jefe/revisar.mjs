@@ -378,7 +378,7 @@ async function main() {
   const abiertos = await q(KK, 'jefe_hallazgos?select=id,clave,abierto_en,avisado_en,detalle,causa,patrones&cerrado_en=is.null')
     .catch(() => q(KK, 'jefe_hallazgos?select=id,clave,abierto_en,avisado_en,detalle&cerrado_en=is.null'))
   const memoria = new Map((await q(KK, 'jefe_aprendizaje?select=*').catch((e) => { log(`(sin memoria: ${corto(e, 120)})`); return [] })).map((m) => [m.patron, m]))
-  const ctx = { q, KK, CC, NOMBRES, ROBOT_DIG, cshpCaido, corto, horaGT, haceMin, USUARIOS_ROBOT: [E.CSHP_PROD_USUARIO, E.CSHP_USUARIO, E.CSHP_ROBOT_USUARIOS].join(',').split(',').map((x) => x.trim()).filter(Boolean) }
+  const ctx = { q, KK, CC, NOMBRES, ROBOT_DIG, cshpCaido, memoria, corto, horaGT, haceMin, USUARIOS_ROBOT: [E.CSHP_PROD_USUARIO, E.CSHP_USUARIO, E.CSHP_ROBOT_USUARIOS].join(',').split(',').map((x) => x.trim()).filter(Boolean) }
   const aprender = new Map()   // patron → datos nuevos (se cuentan una vez por hallazgo)
   for (const h of encontrados) {
     const ya = abiertos.find((a) => a.clave === h.clave)
@@ -406,8 +406,12 @@ async function main() {
   const horaAhora = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Guatemala', hour: '2-digit', hour12: false }).format(new Date()).padStart(2, '0')
   for (const [patron, p] of aprender) {
     const m = memoria.get(patron) || { patron, veces: 0, primera: ahora, horas: {}, resueltos: 0, minutos_resolver: 0 }
+    // el mismo problema dentro de 6 h (p. ej. el hallazgo se cerró y se volvió a abrir) es el MISMO incidente: no suma
+    const nuevo = !m.ultima || Date.now() - new Date(m.ultima).getTime() > 6 * 3600000
     const fila = { ...m, robot: p.robot || m.robot || null, causa: p.causa || m.causa, accion: p.accion || m.accion, ejemplo: p.ejemplo || m.ejemplo || null,
-      veces: (m.veces || 0) + 1, ultima: ahora, horas: { ...(m.horas || {}), [horaAhora]: ((m.horas || {})[horaAhora] || 0) + 1 } }
+      veces: (m.veces || 0) + (nuevo ? 1 : 0), ultima: ahora,
+      horas: nuevo ? { ...(m.horas || {}), [horaAhora]: ((m.horas || {})[horaAhora] || 0) + 1 } : (m.horas || {}) }
+    memoria.set(patron, fila)
     await q(KK, 'jefe_aprendizaje?on_conflict=patron', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal', body: fila })
       .then(() => log(`APRENDIÓ ${patron} (${fila.veces} vez/veces)`)).catch((e) => log(`No se pudo guardar aprendizaje: ${corto(e, 150)}`))
   }

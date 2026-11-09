@@ -56,6 +56,29 @@ function parecido(a, b) {
   return comunes / Math.min(A.size, B.size) * (comunes >= 2 ? 1 : 0.5)
 }
 
+/* ¿Es el mismo nombre con un error de dedo? ("andersn guzman" = "anderson guzman" = "andersson guzman") */
+function distancia(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 1; j <= b.length; j++) d[0][j] = j
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+  return d[a.length][b.length]
+}
+function mismoNombre(a, b) {
+  const A = normal(a).split(' ').filter(Boolean), B = normal(b).split(' ').filter(Boolean)
+  if (!A.length || A.length !== B.length) return normal(a) === normal(b)
+  return A.every((w, i) => distancia(w, B[i]) <= (Math.max(w.length, B[i].length) >= 6 ? 2 : 1))
+}
+/* Clave estable para un técnico: si la memoria ya conoce un nombre casi igual, usa ese */
+function claveTecnico(tipo, nombre, ctx) {
+  const n = normal(nombre)
+  for (const k of ctx.memoria?.keys() || []) {
+    const [t, ...resto] = k.split(':')
+    if (/^tecnico_/.test(t) && mismoNombre(resto.join(':'), n)) return `${tipo}:${resto.join(':')}`
+  }
+  return `${tipo}:${n}`
+}
+
 /* ================= Investigaciones por tipo de hallazgo ================= */
 
 async function robotCaidoOError(h, ctx) {
@@ -95,7 +118,10 @@ async function tecnicosPendientes(h, ctx) {
     const centros = new Map((await ctx.q(ctx.CC, 'llamadas_centros?select=id,nombre').catch(() => [])).map((c) => [c.id, c.nombre]))
     cat.forEach((t) => { t.llamadas_centros = { nombre: centros.get(t.centro_id) } })
     const porNombre = new Map()
-    sinTec.forEach((a) => { const k = normal(a.tecnico_nombre); porNombre.set(k, [...(porNombre.get(k) || []), a]) })
+    sinTec.forEach((a) => {
+      const k = [...porNombre.keys()].find((x) => mismoNombre(x, a.tecnico_nombre)) || normal(a.tecnico_nombre)
+      porNombre.set(k, [...(porNombre.get(k) || []), a])
+    })
     for (const [, ls] of porNombre) {
       const a = ls[0], centro = a.llamadas_centros?.nombre || `centro ${a.centro_id}`
       const mejores = cat.map((t) => ({ ...t, s: parecido(a.tecnico_nombre, t.nombre) })).filter((t) => t.s >= 0.5).sort((x, y) => y.s - x.s).slice(0, 2)
@@ -103,12 +129,12 @@ async function tecnicosPendientes(h, ctx) {
       if (mejores.length) {
         const m = mejores[0], mc = m.llamadas_centros?.nombre || `centro ${m.centro_id}`
         res.ev.push(`"${a.tecnico_nombre}" (${centro}, ${lista}) → en el catálogo existe "${m.nombre}" (${mc}, ${m.tipo}). El robot no los empata porque el nombre no es igual.`)
-        res.pats.push({ patron: `tecnico_nombre_distinto:${normal(a.tecnico_nombre)}`, robot: 'digitadores',
+        res.pats.push({ patron: claveTecnico('tecnico_nombre_distinto', a.tecnico_nombre, ctx), robot: 'digitadores',
           causa: `El técnico se registra en la Bandeja como "${a.tecnico_nombre}" y en el catálogo está como "${m.nombre}"`,
           accion: m.tipo !== 'reparacion' ? `Agregar "${m.nombre}" como técnico de reparación en el catálogo` : `Igualar el nombre: en el catálogo de técnicos o en el usuario del técnico en la Bandeja`, ejemplo: lista })
       } else {
         res.ev.push(`"${a.tecnico_nombre}" (${centro}, ${lista}) → no existe nada parecido en el catálogo de ningún centro.`)
-        res.pats.push({ patron: `tecnico_no_existe:${normal(a.tecnico_nombre)}`, robot: 'digitadores',
+        res.pats.push({ patron: claveTecnico('tecnico_no_existe', a.tecnico_nombre, ctx), robot: 'digitadores',
           causa: `"${a.tecnico_nombre}" no está en el catálogo de técnicos (técnico nuevo o de otro centro)`,
           accion: `Agregar "${a.tecnico_nombre}" al catálogo de técnicos de reparación de ${centro}. En cuanto esté, el robot retoma sus llamadas solo.`, ejemplo: lista })
       }
