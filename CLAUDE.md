@@ -27,6 +27,15 @@ y el **Jefe** (robot auditor). Node ESM, `.env` por carpeta (`node --env-file=.e
 | `mimo\` | MiMo (quitado del dungeon) | — | — | kkzo |
 **Nunca correr el mismo robot en PROD en dos PCs** (duplica trabajo en CSHP). En otra PC usar solo QA / `--solo-listar`.
 
+## Flujo de cada robot (detalle en el README.md de cada carpeta)
+- **guias**: busca en CSHP llamadas de HPCS016 en status 106 → Cambiar Status → imprime guía (`IMPRESORA_GUIA`) y diagnóstico (`IMPRESORA_DIAGNOSTICO`) sin diálogo (`--kiosk-printing`, cambia la impresora predeterminada y la restaura). Si falla después de cambiar status, se detiene y queda en `registro.json` (nunca reprocesa sola).
+- **digitadores**: Bandeja (ConsumosCS) en estado Garantía → en CSHP: resolución + tipología (101 Reparación / 123 Mantenimiento) → status 108 con el técnico → Facturar → solo LLS (o LLM con guía "ENVIO" / Cemaco con OPE-) status 106 Logística - Envío. Bien → digitada; si no → pendiente con motivo. Técnico se empata contra `llamadas_tecnicos` (catálogo de reparación). Switch "Robot digita Garantía" en Administración (etiquetera_config). Ejecuta órdenes del Jefe (cambiar SKU misma familia).
+- **citas**: equipos de hpc-citas en Pendiente → busca cliente por teléfono (8 dígitos) o lo crea → crea llamada en Centro de Servicio Zona 4 (`CITA <ID>: <falla>`) → log tipo 1 → guarda número → Completado. Si no puede: Revisar. Nunca crea dos veces.
+- **correos**: triggers de ConsumosCS meten filas en `correos_cola` → envía con el Outlook clásico de la PC (`CORREO_MODO=outlook`, sin Azure). Flujos: autoconsumos (solicitud/aprobado/rechazado), garantías/NC, y alertas del Jefe (`jefe_alerta`). QA redirige todo a `REDIRIGIR_A`.
+- **garantias**: `garantias_manuales` (kkzo) NDC + sync_status pending → crea llamada (Logística, Cliente SAP, HPCS016, Garantía Herr Manual) → status TLS - NC Autorizada. Manual. Copia de `hpc-garantias/scripts/sync.ts` con reportes al monitor.
+- **mimo**: kiosko MiMo → crea llamada en Zona 4 → T - En Ruta. Fuera del dungeon por ahora.
+- Apps en repos aparte: hpc-citas, hpc-mimo, hpc-garantias (Next.js), ConsumosCS (Bandeja/autoconsumos). Aquí solo van los robots.
+
 ## Supabase
 - **kkzo** `https://kkzovradqpptmsaakqlb.supabase.co`: citas, MiMo, garantias_manuales, y el monitor:
   `robot_status` (PK robot+pc, columna `centro`), `robot_eventos`, vista `robot_resumen_hoy`, `robot_tokens` + RPC `robot_reportar`,
@@ -63,3 +72,10 @@ Revisa: CSHP, carga (pendientes reales por robot y por centro), garantías, robo
 - `garantias_manuales` es escribible con anon key (RLS pendiente de revisar). El dashboard es público y muestra correos en la bitácora.
 - Pendientes: riesgos de envío duplicado en correos, RLS de garantias_manuales, privacidad del dashboard, archivar repos viejos.
 - Cambios en `shared\` llegan a todas las PCs con `git pull`: probar en QA antes del push.
+
+## Hacia dónde va (Jefe 2.0) — meta: que el Jefe sea independiente, sin depender de Claude ni de IA externa
+1. Telegram: alertas al celular, comandos (/estado, /alertas, /hoy, /aprendido) y botones para confirmar o corregir la causa. Bot solo responde al chat de Joshua; token en `jefe\.env`. Recibir mensajes idealmente con una función en Supabase (contesta aunque la PC esté apagada).
+2. Línea base de lo normal por robot / hora / centro y detección de anomalías.
+3. Confianza por regla (sube/baja con las confirmaciones) y autonomía que se gana: acciones seguras repetidas se aprueban N veces y luego las hace solo; si falla, vuelve a pedir permiso.
+4. Reporte semanal de lo aprendido. Errores no reconocidos se agrupan y se le preguntan a Joshua (una etiqueta = lo reconoce para siempre).
+
