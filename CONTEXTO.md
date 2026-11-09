@@ -62,6 +62,9 @@ Digitadores reporta **un cuarto por centro**: pc = `HPCLPJCOTUC · <centro>`, ce
 14 centros = niveles (Nodus·Z6, Zona 4, Chimaltenango, Quiché, Escuintla, Río Hondo, Xela, Cobán, Huehuetenango, Mazatenango, Petén, Jutiapa, El Rancho, Morales; **no hay Zona 5**).
 Además el nivel **Común** (`COMUN` en `index.html`) para robots que no son de un centro de servicio: hoy solo Catálogo Truper (cuarto con estante → compu → hoja de Excel que se llena con el avance).
 Citas en Zona 4; guías, digitadores, correos, garantías en Nodus; truper en Común. Jefe al centro (oficina global), cafetería = robots sin trabajo.
+**Vistas** (botones arriba o `?vista=`): `dungeon`, `nave`, `corporativo` (Oficinas), `taller` (Taller de Servicio). Solo cambian ambientación, Jefe y diálogos (`VISTAS` en `index.html`); se recuerda en el navegador.
+Cada cuarto muestra arriba a la derecha su productividad de hoy (OK / ERR / PEND) y cada robot la dice en sus globos (`DICE`); cada robot tiene su accesorio (`look` en `ROBOTS`).
+Digitadores (`grupo: true`) = **un solo cuarto** con un puesto por centro; con un centro elegido solo se ve su puesto.
 Estados: trabajando / esperando / durmiendo / error / caído / sin datos / libre. Robots manuales (`manual: true`: garantías, truper) nunca "caídos".
 El Jefe camina (nunca se teletransporta); señala la alerta 2 min y luego **sale a investigar** al cuarto, dice la causa y regresa a informar.
 
