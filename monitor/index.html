@@ -138,11 +138,11 @@ const ROBOTS = [
   /* Cafetería: sala de espera. Los robots sin pendientes caminan hasta aquí y vuelven cuando les llega trabajo */
   { id: 'cafeteria',   nombre: 'Cafetería',   sala: 'cafeteria',  global: true,     color: '#a16207' },
   /* look = accesorio del robot (cada uno se ve distinto): diadema | gorra | lentes | cartero | corbata | casco */
-  { id: 'citas',       nombre: 'Citas',       sala: 'recepcion',  centro: 'Zona 4', color: '#f5c542', look: 'diadema', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
+  { id: 'citas',       nombre: 'Citas',       sala: 'recepcion',  centro: 'Zona 4', color: '#f5c542', look: 'diadema', horario: { dias: LS, desde: '06:00', hasta: '22:00' } },
   /* Guías puede correr en varios centros: cada PC pone ROBOT_CENTRO en su .env (ver monitor/03_centros.sql); sin eso = Nodus */
   { id: 'guias',       nombre: 'Guías',       sala: 'logistica',  centro: 'Nodus',  color: '#60a5fa', look: 'gorra', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
   /* grupo = todos sus reportes (uno por centro) van en UN solo cuarto, con un puesto por centro */
-  { id: 'digitadores', nombre: 'Digitadores', sala: 'digitacion', centro: 'Nodus',  color: '#2dd4bf', look: 'lentes', grupo: true, horario: { dias: LS, desde: '07:00', hasta: '18:00' },
+  { id: 'digitadores', nombre: 'Digitadores', sala: 'digitacion', centro: 'Nodus',  color: '#2dd4bf', look: 'lentes', grupo: true, horario: { dias: LS, desde: '06:00', hasta: '22:00' },
     /* Un puesto por estado de llamada. Para agregar otro: { id, nombre, rotulo, color, tipos: /texto/i } */
     areas: [
       { id: 'garantia', nombre: 'Garantía', rotulo: 'GARANTIA', color: '#2dd4bf', tipos: /garant/i, defecto: true },

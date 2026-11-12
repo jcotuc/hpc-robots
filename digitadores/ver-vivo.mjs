@@ -12,11 +12,11 @@ const fechaGT = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Americ
 const horaGT = () => new Date().toLocaleTimeString('es-GT', { timeZone: 'America/Guatemala', hour12: false })
 const C = { verde: '\x1b[32m', amarillo: '\x1b[33m', rojo: '\x1b[31m', gris: '\x1b[90m', cian: '\x1b[36m', negrita: '\x1b[1m', fin: '\x1b[0m' }
 
-/** Horario de la tarea: lunes a sábado, 7:00 a 18:00 (hora de Guatemala) */
+/** Horario de la tarea: lunes a sábado, 6:00 a 22:00 (hora de Guatemala) */
 function enHorario() {
   const ahora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guatemala' }))
   const h = ahora.getHours() + ahora.getMinutes() / 60
-  return ahora.getDay() !== 0 && h >= 7 && h < 18
+  return ahora.getDay() !== 0 && h >= 6 && h < 22
 }
 
 function pintar(l) {

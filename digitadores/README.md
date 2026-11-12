@@ -12,7 +12,7 @@ npm.cmd run listar:prod      ver qué procesaría en producción (solo lee)
 npm.cmd run prod:visible     producción con navegador visible
 npm.cmd run prod             producción sin navegador
 npm.cmd run prueba           QA con datos de prueba.json (sin Supabase)
-.\programar-tarea.cmd        tarea "HPC Digitadores CSHP" cada 3 min, L-S 7:00-18:00
+.\programar-tarea.cmd        tarea "HPC Digitadores CSHP" cada 3 min, L-S 6:00-22:00
 .\quitar-tarea.cmd           elimina la tarea
 schtasks /Run /TN "HPC Digitadores CSHP"     correr la tarea ya
 schtasks /Query /TN "HPC Digitadores CSHP" /V /FO LIST    estado de la tarea

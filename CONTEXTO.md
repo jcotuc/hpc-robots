@@ -20,8 +20,8 @@ y el **Jefe** (robot auditor). Node ESM, `.env` por carpeta (`node --env-file=.e
 ## Robots, PCs y tareas
 | Carpeta | Hace | PC donde corre en PROD | Tarea | Supabase |
 |---|---|---|---|---|
-| `citas\` | Crea llamadas desde hpc-citas | HPCLPJCOTUC (Joshua) | HPC Citas CSHP, c/5 min | kkzo |
-| `digitadores\` | Digita llamadas en estado Garantía de la Bandeja | HPCLPJCOTUC (**solo una PC**: `registro.json` es local) | HPC Digitadores CSHP, c/3 min, 7–18 | ConsumosCS |
+| `citas\` | Crea llamadas desde hpc-citas | HPCLPJCOTUC (Joshua) | HPC Citas CSHP, c/5 min, 6–22 | kkzo |
+| `digitadores\` | Digita llamadas en estado Garantía de la Bandeja | HPCLPJCOTUC (**solo una PC**: `registro.json` es local) | HPC Digitadores CSHP, c/3 min, 6–22 | ConsumosCS |
 | `correos\` | Envía correos de `correos_cola` (Outlook/M365) | HPCLPJCOTUC | HPC Correos, c/2 min | ConsumosCS |
 | `jefe\` | Audita a los robots (ver abajo) | HPCLPJCOTUC | HPC Jefe, **c/3 min**, 6–21 | kkzo + ConsumosCS |
 | `guias\` | Status 106 + imprime guía y diagnóstico | HPCPCLOGISTICA (token) | HPC Guias CSHP, c/3 min | solo monitor |

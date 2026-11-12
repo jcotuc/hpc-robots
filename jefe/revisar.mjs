@@ -33,8 +33,8 @@ const mon = crearMonitor('jefe', { intervaloSeg: 180, activo: PROD })
 /* Horario de cada robot (igual que su programar-tarea.cmd) para no alarmar fuera de turno */
 const LS = [1, 2, 3, 4, 5, 6]
 const HORARIOS = {
-  citas: { dias: LS, desde: '05:55', hasta: '20:25' }, guias: { dias: LS, desde: '07:00', hasta: '20:00' },
-  digitadores: { dias: LS, desde: '07:00', hasta: '18:00' }, correos: { dias: LS, desde: '07:00', hasta: '20:00' },
+  citas: { dias: LS, desde: '06:00', hasta: '22:00' }, guias: { dias: LS, desde: '07:00', hasta: '20:00' },
+  digitadores: { dias: LS, desde: '06:00', hasta: '22:00' }, correos: { dias: LS, desde: '07:00', hasta: '20:00' },
 }
 const NOMBRES = { citas: 'Citas', guias: 'Guías', digitadores: 'Digitadores', correos: 'Correos', garantias: 'Garantías', truper: 'Catálogo Truper' }
 /* Robots que se corren a mano: si no reportan no es falla; solo importa si tienen pendientes esperando */
