@@ -839,12 +839,34 @@ function salaLogistica(q, s, est, t, col) {
 function salaDigitacion(q, s, est, t, col) {
   const id = q.k.split('|')[0], m = meta(id);
   let subs = esGrupo(q.k) ? subKeys(q.k, true) : [];
+  /* Escritorio solo para los centros con movimiento (trabajando, error, pendientes o un OK en la última hora), máx. 4.
+     Los demás van en la PIZARRA de la derecha: centro + OK de hoy. Así caben los 14 centros. */
   const orden = x => PRIORIDAD.indexOf(estadoVista(x)) * 1000 - (resumen.get(x)?.ok_hoy || 0);
-  let extra = 0;
-  if (subs.length > 8) { const top = [...subs].sort((a, b) => orden(a) - orden(b)).slice(0, 7); extra = subs.length - 7; subs = subs.filter(x => top.includes(x)); }
+  const activo = x => ['trabajando', 'error'].includes(estadoVista(x)) || (cargaDe(x)?.pendientes || 0) > 0
+    || (ultimoOk.get(x) && Date.now() - new Date(ultimoOk.get(x)).getTime() < 3600000);
+  const todosS = [...subs].sort((a, b) => orden(a) - orden(b));
+  let enMesa = subs.length <= 2 ? todosS : todosS.filter(activo).slice(0, 4);
+  if (!enMesa.length && todosS.length) enMesa = todosS.slice(0, 1);
+  const pizarra = todosS.filter(x => !enMesa.includes(x));
+  subs = enMesa;
+  const extra = 0, PZ = pizarra.length ? 58 : 0;   // ancho de la pizarra
+  if (PZ) {
+    const x0 = RW - PZ - 4, y0 = 27, h = RH - 34;
+    px(x0, y0, PZ, h, '#1f2937'); px(x0, y0, PZ, 2, col); px(x0 + 1, y0 + 2, PZ - 2, h - 3, '#111827');
+    const otros = pizarra.some(activo); texto(otros ? 'OTROS' : 'AL DÍA', x0 + PZ / 2, y0 + 9, 3, otros ? '#fde68a' : '#86efac', true);
+    const caben = Math.floor((h - 14) / 7), lista = pizarra.slice(0, pizarra.length > caben ? caben - 1 : caben);
+    lista.forEach((x, i) => {
+      const st = status.get(x), ok = resumen.get(x)?.ok_hoy || 0, e = estadoVista(x), dimP = ['caido', 'sindatos', 'durmiendo'].includes(e);
+      const nom = corta(st?.centro || String(x.split('|')[1]).replace(/^.* · /, '')).slice(0, 8);
+      px(x0 + 3, y0 + 14 + i * 7, 3, 3, ESTADOS[e].c);
+      texto(nom, x0 + 8, y0 + 17 + i * 7, 3, dimP ? '#6b7280' : '#e5e7eb', false, false);
+      texto(String(ok), x0 + PZ - 4 - ctx.measureText(String(ok)).width, y0 + 17 + i * 7, 3, ok ? '#86efac' : '#6b7280', false, false);
+    });
+    if (pizarra.length > lista.length) texto(`+${pizarra.length - lista.length} MÁS`, x0 + PZ / 2, y0 + 17 + lista.length * 7, 3, '#9ca3af', true, false);
+  }
   const puestos = subs.length ? subs : [null];
-  const n = puestos.length + (extra ? 1 : 0), cols = Math.min(4, n), filas = Math.ceil(n / cols);
-  const cw = (RW - 8) / cols, ch = (RH - 30) / filas, angosto = cols > 2;
+  const n = puestos.length, cols = PZ ? Math.min(2, n) : Math.min(4, n), filas = Math.ceil(n / cols);
+  const cw = (RW - 8 - PZ - (PZ ? 2 : 0)) / cols, ch = (RH - 30) / filas, angosto = cw < 60;
   puestos.forEach((x, i) => {
     const c = i % cols, f = Math.floor(i / cols), cx = Math.round(4 + cw * c + cw / 2), y0 = Math.round(27 + ch * f);
     const e = x ? estadoVista(x) : est, st = x ? status.get(x) : null, ok = x ? (resumen.get(x)?.ok_hoy || 0) : 0, err = x ? (resumen.get(x)?.errores_hoy || 0) : 0;
