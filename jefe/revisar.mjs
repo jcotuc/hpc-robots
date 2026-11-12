@@ -295,7 +295,11 @@ async function revisarCarga() {
   })
   await intenta('garantias', async () => {
     const r = await q(KK, 'garantias_manuales?select=id,created_at&sync_status=eq.pending&record_status=eq.NDC&deleted=eq.false&limit=200')
-    return { n: r.length, detalle: r.length ? `${r.length} NDC por sincronizar (se corre a mano)` : 'Sin NDC pendientes', masVieja: r.map((x) => x.created_at).sort()[0] }
+    // hechas hoy según la BASE (no depende de que el robot reporte al monitor): llamada creada en CSHP hoy
+    const inicio = new Date(`${fechaGT()}T00:00:00-06:00`).toISOString()
+    const h = await q(KK, `garantias_manuales?select=last_sync_attempt_at&sync_status=in.(synced,status_updated)&deleted=eq.false&last_sync_attempt_at=gte.${inicio}&order=last_sync_attempt_at.desc&limit=2000`)
+    return { n: r.length, detalle: r.length ? `${r.length} NDC por sincronizar (se corre a mano)` : 'Sin NDC pendientes', masVieja: r.map((x) => x.created_at).sort()[0],
+      hoy: h.length, ultima: h[0]?.last_sync_attempt_at || null }
   })
   await intenta('truper', async () => {
     // Catálogo Truper (mensual): pendiente = 1 mientras no se haya descargado el catálogo de este mes
@@ -312,8 +316,12 @@ async function revisarCarga() {
     return { n: lista.length, detalle: lista.length ? `${lista.length} LLS en 106 por imprimir: ${lista.slice(0, 5).join(', ')}` : 'Sin LLS en 106 por imprimir' }
   })
   Object.entries(CARGA).forEach(([r, c]) => log(`CARGA ${r}: ${c.n ?? '?'} · ${c.detalle}`))
-  if (PROD) await q(KK, 'robot_carga?on_conflict=robot', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal',
-    body: Object.entries(CARGA).map(([robot, c]) => ({ robot, pendientes: c.n, detalle: c.detalle, revisado_en: new Date().toISOString() })) })
+  if (PROD) {
+    const filas = Object.entries(CARGA).map(([robot, c]) => ({ robot, pendientes: c.n, detalle: c.detalle, revisado_en: new Date().toISOString(), hoy: c.hoy ?? null, ultima: c.ultima ?? null }))
+    const subir = (body) => q(KK, 'robot_carga?on_conflict=robot', { method: 'POST', prefer: 'resolution=merge-duplicates,return=minimal', body })
+    // si todavía no se corrió monitor/08_carga_hoy.sql (columnas hoy/ultima), se sube sin ellas
+    await subir(filas).catch(() => subir(filas.map(({ hoy, ultima, ...f }) => f)))
+  }
   return []
 }
 

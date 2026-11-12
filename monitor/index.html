@@ -318,7 +318,15 @@ function statusDe(k) {
   const last = subs.map(x => status.get(x).last_seen).sort().pop();
   return { ...status.get(mejor), pc: '*', centro: null, last_seen: last };
 }
+/* Hechas hoy según la base (lo calcula el Jefe en robot_carga.hoy): sirve aunque el robot no reporte al monitor (Garantías) */
+function hoyDeBase(id) {
+  const c = carga.get(id); if (!c || c.hoy == null) return null;
+  const dia = d => new Date(d).toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' });
+  return dia(c.revisado_en) === dia(Date.now()) ? c : null;
+}
 function resumenDe(k) {
+  const b = !esGrupo(k) && hoyDeBase(k.split('|')[0]);
+  if (b) { const r = resumen.get(k) || { ok_hoy: 0, errores_hoy: 0 }; return { ...r, ok_hoy: Math.max(r.ok_hoy || 0, b.hoy) }; }
   if (!esGrupo(k)) return resumen.get(k) || { ok_hoy: 0, errores_hoy: 0 };
   return subKeys(k).reduce((a, x) => { const r = resumen.get(x) || {}; a.ok_hoy += r.ok_hoy || 0; a.errores_hoy += r.errores_hoy || 0; return a; }, { ok_hoy: 0, errores_hoy: 0 });
 }
@@ -1391,7 +1399,8 @@ function salaGarantia(q, s, est, t, col) {
   px(112, 62, 28, 4, T.mesa); px(114, 66, 3, 12, T.pata); px(135, 66, 3, 12, T.pata);
   // archivero: un cajón más lleno por NC del día
   px(146, 46, 22, 32, '#57534e'); for (let i = 0; i < 3; i++) { px(148, 49 + i * 10, 18, 8, '#78716c'); px(155, 52 + i * 10, 4, 2, '#d6d3d1'); }
-  const ok = Math.min(9, resumen.get(q.k)?.ok_hoy || 0); for (let i = 0; i < ok; i++) px(149 + (i % 3) * 5, 43 - Math.floor(i / 3) * 2, 4, 2, '#f5d0fe');
+  const hechas = resumenDe(q.k).ok_hoy, ok = Math.min(9, hechas); for (let i = 0; i < ok; i++) px(149 + (i % 3) * 5, 43 - Math.floor(i / 3) * 2, 4, 2, '#f5d0fe');
+  texto(`HOY ${hechas}`, 157, 86, 3, hechas ? '#86efac' : '#6b6475', true);   // NC creadas hoy (según la base)
   // letrero
   px(56, 28, 72, 12, '#1f2937'); px(56, 28, 72, 2, col); texto('NOTAS DE CRÉDITO', 92, 37, 4, '#f5d0fe', true);
   let r = { x: PC[0], y: PC[1], accion: 'pie', f: 0 };
@@ -1638,6 +1647,7 @@ function renderCards() {
     const rs = resumenDe(k), cg = cargaDe(k);
     const p = prevEst.get(k); if (p && p !== e && (e === 'error' || e === 'caido')) sonar(e); prevEst.set(k, e);
     const det = e === 'caido' ? `Sin reportar desde ${s ? hhmm(s.last_seen) : '—'} (esperado cada ${Math.round((s?.intervalo_seg || 180) / 60)} min)`
+      : id === 'garantias' && hoyDeBase('garantias') ? `Hoy ${hoyDeBase('garantias').hoy} NC${hoyDeBase('garantias').ultima ? ' · última ' + hhmm(hoyDeBase('garantias').ultima) : ' · aún no lo corren'}${!s || Date.now() - new Date(s.last_seen) > 86400000 ? ' · ⚠ no reporta (¿app vieja?)' : ''}${cg?.pendientes > 0 ? ` · ${cg.pendientes} NDC pend.` : ''}`
       : m.manual && e === 'esperando' && cg?.pendientes > 0 ? (id === 'garantias' ? `${cg.pendientes} NDC por sincronizar · se corre a mano (correr.cmd)` : cg.detalle)
       : e === 'libre' ? `Sin pendientes${cg?.detalle ? ' (' + cg.detalle + ')' : ''} · descansando en la cafetería`
       : e === 'sindatos' ? 'Aún no reporta al monitor'
