@@ -55,7 +55,6 @@ const LENTO = arg('--lento')
 // En QA nunca se escribe en la Bandeja (es la de producción)
 const ESCRIBE_BANDEJA = ES_PROD && !SOLO_LISTAR
 const RESERVA_MS = 30 * 60 * 1000
-const mon = monitorPorCentro()   // dungeon: un digitador por centro de servicio (ver abajo)
 const REGISTRO = 'registro.json'
 const PATRON = /^LL[SM]\d+-\d+$/i
 
@@ -172,6 +171,7 @@ function monitorPorCentro() {
     flush: () => Promise.all([...mons.values()].map((m) => m.flush())),
   }
 }
+const mon = monitorPorCentro()   // dungeon: un digitador por centro (se crea despues de centroDungeon/CENTROS_DUNGEON)
 
 // ─── Diagnóstico (copiado de ConsumosCS: llamadas-diagnostico.ts, llamadas-machotes.ts, llamadas-diagnostico-revision.ts) ──
 // El texto que pega el robot es EXACTAMENTE el del botón "Copiar" de la Bandeja:
