@@ -104,8 +104,23 @@ function resumen(linea) {
 // Es el MISMO robot: solo se reporta al monitor separado por el centro de cada llamada (Bandeja → llamadas_centros).
 // Cada centro es una fila en robot_status con pc = "<PC> · <centro>"; todas reportan en cada corrida (si no, saldrían caídas).
 // Centros que ya tuvieron llamadas: centros-dungeon.json (se agregan solos). Requiere monitor/03_centros.sql
-const CENTRO_DUNGEON = { 'zona 6': 'Nodus' }   // nombre en la Bandeja → nivel del dungeon (los demás se llaman igual)
-const centroDungeon = (n) => CENTRO_DUNGEON[normalizar(n)] || String(n ?? '').trim() || 'Nodus'
+// Nombre del centro en la Bandeja → nivel del dungeon. Corrige errores de dedo ("El aRancho", "ElRancho" → "El Rancho")
+const CENTROS_DUNGEON = ['Nodus', 'Zona 4', 'Chimaltenango', 'Quiché', 'Escuintla', 'Río Hondo', 'Xela', 'Cobán', 'Huehuetenango', 'Mazatenango', 'Petén', 'Jutiapa', 'El Rancho', 'Morales']
+const ALIAS_CENTRO = { zona6: 'Nodus', nodus: 'Nodus', quetzaltenango: 'Xela' }
+const claveCentro = (n) => String(n ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+function distCentro(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 1; j <= b.length; j++) d[0][j] = j
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+  return d[a.length][b.length]
+}
+const centroDungeon = (n) => {
+  const k = claveCentro(n); if (!k) return 'Nodus'
+  if (ALIAS_CENTRO[k]) return ALIAS_CENTRO[k]
+  const num = (x) => x.replace(/\D/g, '')   // "Zona 18" nunca es "Zona 4"
+  const m = CENTROS_DUNGEON.filter((c) => num(claveCentro(c)) === num(k)).map((c) => ({ c, d: distCentro(k, claveCentro(c)) })).sort((a, b) => a.d - b.d)[0] || { d: 99 }
+  return m.d <= (k.length >= 6 ? 2 : 1) ? m.c : String(n).trim()   // centro nuevo de verdad: se queda con su nombre
+}
 function monitorPorCentro() {
   const activo = ESCRIBE_BANDEJA && !PRUEBA
   const ARCHIVO = 'centros-dungeon.json', PC_BASE = (process.env.ROBOT_PC || hostname()).trim().toUpperCase()
@@ -117,6 +132,7 @@ function monitorPorCentro() {
     if (activo && !vistos.includes(c)) { vistos.push(c); try { writeFileSync(ARCHIVO, JSON.stringify(vistos)) } catch { /* nunca detiene */ } }
     return mons.get(c)
   }
+  vistos = [...new Set(vistos.map(centroDungeon))]   // limpia nombres mal escritos guardados antes
   vistos.forEach(de)
   const deLlamada = (t) => centroLlamada.get(((String(t ?? '').match(/\bLL[SM]\d+-\d+\b/i) || [])[0] || '').toUpperCase())
   return {

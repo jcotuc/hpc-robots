@@ -72,7 +72,23 @@ async function q(db, path, { method = 'GET', body, prefer } = {}) {
 }
 
 /* Nombre del centro en la Bandeja (ConsumosCS) → nivel del dungeon. Igual que en digitadores/digitar-garantia.mjs */
-const centroDungeon = (n) => ({ 'zona 6': 'Nodus' })[String(n ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()] || String(n ?? '').trim() || 'Nodus'
+// Nombre del centro en la Bandeja → nivel del dungeon. Corrige errores de dedo ("El aRancho", "ElRancho" → "El Rancho")
+const CENTROS_DUNGEON = ['Nodus', 'Zona 4', 'Chimaltenango', 'Quiché', 'Escuintla', 'Río Hondo', 'Xela', 'Cobán', 'Huehuetenango', 'Mazatenango', 'Petén', 'Jutiapa', 'El Rancho', 'Morales']
+const ALIAS_CENTRO = { zona6: 'Nodus', nodus: 'Nodus', quetzaltenango: 'Xela' }
+const claveCentro = (n) => String(n ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+function distCentro(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)])
+  for (let j = 1; j <= b.length; j++) d[0][j] = j
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+  return d[a.length][b.length]
+}
+const centroDungeon = (n) => {
+  const k = claveCentro(n); if (!k) return 'Nodus'
+  if (ALIAS_CENTRO[k]) return ALIAS_CENTRO[k]
+  const num = (x) => x.replace(/\D/g, '')   // "Zona 18" nunca es "Zona 4"
+  const m = CENTROS_DUNGEON.filter((c) => num(claveCentro(c)) === num(k)).map((c) => ({ c, d: distCentro(k, claveCentro(c)) })).sort((a, b) => a.d - b.d)[0] || { d: 99 }
+  return m.d <= (k.length >= 6 ? 2 : 1) ? m.c : String(n).trim()   // centro nuevo de verdad: se queda con su nombre
+}
 
 /* =============== Revisiones (cada una devuelve hallazgos) =============== */
 // h = { clave, robot, pc?, centro?, severidad: 'alta'|'media', titulo, detalle }
