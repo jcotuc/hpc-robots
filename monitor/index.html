@@ -29,7 +29,10 @@ button.on{border-color:var(--ok);color:var(--ok)}
 .demo{font-family:"Press Start 2P",monospace;font-size:9px;color:#111;background:var(--gold);padding:6px 8px}
 main{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;padding:12px}
 .izq{display:flex;flex-direction:column;gap:8px;min-height:0;min-width:0}
-.mapa{background:#07060a;border:2px solid var(--line);line-height:0;display:flex;align-items:center;justify-content:center;min-height:0;min-width:0;flex:1}
+.mapa{background:#07060a;border:2px solid var(--line);line-height:0;display:flex;align-items:safe center;justify-content:safe center;min-height:0;min-width:0;flex:1;overflow:auto}
+.mapa.arrastra{cursor:grabbing}
+.zoomctl{display:flex;align-items:center;gap:4px}
+.zoomctl button{min-width:28px;justify-content:center}
 .niveles{display:flex;flex-wrap:wrap;gap:6px}
 .nivel{display:flex;align-items:center;gap:6px;font-size:9px;padding:6px 8px}
 .nivel.activo{border-color:var(--gold);color:var(--gold)}
@@ -94,6 +97,7 @@ aside h2{font-family:"Press Start 2P",monospace;font-size:10px;margin:0;padding:
   <div class="kpis" id="kpis"></div>
   <div class="tools">
     <nav class="vistas" id="vistas" aria-label="Vista"></nav>
+    <div class="zoomctl" id="zoomctl" aria-label="Zoom del mapa"><button class="nivel" data-z="-" title="Alejar">−</button><span class="nivel" id="zoomTxt">100%</span><button class="nivel" data-z="+" title="Acercar (o Ctrl + rueda)">+</button><button class="nivel" data-z="0" title="Ver todo">AJUSTAR</button></div>
     <span class="demo" id="demoTag" hidden>MODO DEMO</span>
     <button id="snd" title="Alarma en errores y caídos, campanita en cada OK">SONIDO: OFF</button>
   </div>
@@ -396,7 +400,11 @@ function contarEvento(ev, enVivo = false) {
 /* =====================================================================
    MAPA: cuartos conectados por corredores (coordenadas lógicas en píxeles)
    ===================================================================== */
-const RW = 184, RH = 120, G = 30, M = 18;
+let RW = 184, RH = 120;               // tamaño del cuarto que se está dibujando (el de Digitadores en TODOS es más grande)
+const RW0 = 184, RH0 = 120, G = 30, M = 18;
+const cxDe = q => q.x + (q.puertaX ?? RW0 / 2);   // x de la puerta de arriba/abajo de un cuarto (global)
+let ZOOM = 1;   // acercar / alejar (botones, Ctrl+rueda)
+try { ZOOM = Math.min(4, Math.max(1, +localStorage.getItem('dungeon-zoom') || 1)); } catch {}
 const cv = document.getElementById('mapa'), ctx = cv.getContext('2d');
 let S = 3, MW = 0, MH = 0, cols = 1, fondo = null, antorchas = [];
 const cuartos = new Map(); // robot|pc -> {k, x, y, fase}
@@ -467,15 +475,21 @@ function renderNiveles() {
 }
 
 function layout() {
-  const keys = allKeys();
+  const todas = allKeys();
+  // Digitadores con muchos centros: cuarto ANCHO abajo, del ancho de todo el mapa, con un escritorio por centro
+  const kAncho = todas.find(k => esGrupo(k) && subKeys(k, true).length > 4) || null;
+  const nAncho = kAncho ? subKeys(kAncho, true).length : 0;
+  const keys = todas.filter(k => k !== kAncho);
   const box = document.getElementById('mapaBox'), n = keys.length;
   const cw = (box.clientWidth || 800) - 4;
   const ch = pantallaCompleta.matches ? (box.clientHeight || 600) - 4 : Infinity;   // celular: solo el ancho manda
   const medir = celdas => {
     const c0 = Math.min(...celdas.map(x => x.c)), r0 = Math.min(...celdas.map(x => x.r));
     const cs = Math.max(...celdas.map(x => x.c)) - c0 + 1, rs = Math.max(...celdas.map(x => x.r)) - r0 + 1;
-    const w = 2 * M + cs * RW + (cs - 1) * G, h = 2 * M + rs * RH + (rs - 1) * G;
-    return { celdas: celdas.map(x => ({ ...x, c: x.c - c0, r: x.r - r0 })), cols: cs, rows: rs, w, h, esc: Math.min(cw / w, ch / h) };
+    const w = 2 * M + cs * RW + (cs - 1) * G;
+    let h = 2 * M + rs * RH + (rs - 1) * G, wA = 0, hA = 0;
+    if (kAncho) { wA = cs * RW + (cs - 1) * G; const porFila = Math.max(1, Math.floor((wA - 8) / 90)); hA = Math.max(RH, 34 + Math.ceil(nAncho / porFila) * 78); h += hA + G; }
+    return { celdas: celdas.map(x => ({ ...x, c: x.c - c0, r: x.r - r0 })), cols: cs, rows: rs, w, h, wA, hA, esc: Math.min(cw / w, ch / h) };
   };
   const opciones = [];
   const jk = keys.find(k => k.startsWith('jefe|')), otros = keys.filter(k => k !== jk).sort((a, b) => (a === KEY_CAFE) - (b === KEY_CAFE));
@@ -490,19 +504,59 @@ function layout() {
   }
   const mejor = opciones.reduce((a, b) => (b.esc > a.esc + 1e-6 ? b : a));
   cols = mejor.cols; MW = mejor.w; MH = mejor.h;
-  const dpr = window.devicePixelRatio || 1;
-  cv.style.width = Math.floor(MW * mejor.esc) + 'px'; cv.style.height = Math.floor(MH * mejor.esc) + 'px';
-  S = mejor.esc * dpr;
+  const dpr = window.devicePixelRatio || 1, escZ = mejor.esc * ZOOM;
+  cv.style.width = Math.floor(MW * escZ) + 'px'; cv.style.height = Math.floor(MH * escZ) + 'px';
+  S = Math.min(escZ * dpr, Math.sqrt(14e6 / (MW * MH)));   // con mucho zoom se limita la resolución (rendimiento)
   cv.width = Math.round(MW * S); cv.height = Math.round(MH * S);
   const viejos = new Map(cuartos); cuartos.clear();
   mejor.celdas.forEach(({ k, c, r }) => cuartos.set(k, { k, x: M + c * (RW + G), y: M + r * (RH + G), c, r, fase: viejos.get(k)?.fase ?? Math.random() * 8000 }));
-  construirFondo(n, mejor.rows);
+  if (kAncho) {
+    // la puerta de arriba da al cuarto de la última fila más cercano al centro
+    const ult = [...cuartos.values()].filter(q => q.r === mejor.rows - 1).map(q => q.c);
+    const dc = ult.sort((a, b) => Math.abs(a - (mejor.cols - 1) / 2) - Math.abs(b - (mejor.cols - 1) / 2))[0] ?? 0;
+    cuartos.set(kAncho, { k: kAncho, x: M, y: M + mejor.rows * (RH + G), c: dc, r: mejor.rows, w: mejor.wA, h: mejor.hA, puertaX: dc * (RW + G) + RW / 2, fase: viejos.get(kAncho)?.fase ?? Math.random() * 8000 });
+  }
+  construirFondo(n, mejor.rows + (kAncho ? 1 : 0));
   renderCards();
 }
 let ultimaFirma = '';
 const pantallaCompleta = window.matchMedia('(min-width: 981px)');
 function quizasLayout() { const b = document.getElementById('mapaBox'); const f = allKeys().join(',') + '|' + b.clientWidth + 'x' + b.clientHeight; if (f !== ultimaFirma) { ultimaFirma = f; layout(); } }
 window.addEventListener('resize', () => { ultimaFirma = ''; quizasLayout(); });
+/* ---------- Acercar / alejar: botones, Ctrl + rueda; con zoom se arrastra el mapa para moverse ---------- */
+function ponerZoom(z, cx, cy) {
+  const box = document.getElementById('mapaBox'), antes = ZOOM;
+  ZOOM = Math.min(4, Math.max(1, Math.round(z * 100) / 100));
+  try { localStorage.setItem('dungeon-zoom', ZOOM); } catch {}
+  document.getElementById('zoomTxt').textContent = Math.round(ZOOM * 100) + '%';
+  if (ZOOM === antes) return;
+  const r = box.getBoundingClientRect(), px0 = cx ?? r.width / 2, py0 = cy ?? r.height / 2;
+  const fx = (box.scrollLeft + px0) / (box.scrollWidth || 1), fy = (box.scrollTop + py0) / (box.scrollHeight || 1);
+  ultimaFirma = ''; quizasLayout();
+  box.scrollLeft = fx * box.scrollWidth - px0; box.scrollTop = fy * box.scrollHeight - py0;   // se queda donde apuntabas
+}
+document.getElementById('zoomctl').addEventListener('click', e => {
+  const z = e.target.closest('button')?.dataset.z; if (!z) return;
+  ponerZoom(z === '+' ? ZOOM * 1.25 : z === '-' ? ZOOM / 1.25 : 1);
+});
+document.getElementById('zoomTxt').textContent = Math.round(ZOOM * 100) + '%';
+{
+  const box = document.getElementById('mapaBox');
+  box.addEventListener('wheel', e => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault(); const r = box.getBoundingClientRect();
+    ponerZoom(ZOOM * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX - r.left, e.clientY - r.top);
+  }, { passive: false });
+  let drag = null;
+  box.addEventListener('mousedown', e => { if (ZOOM > 1 && e.button === 0) drag = { x: e.clientX, y: e.clientY, sl: box.scrollLeft, st: box.scrollTop, movio: false }; });
+  window.addEventListener('mousemove', e => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) { drag.movio = true; box.classList.add('arrastra'); }
+    box.scrollLeft = drag.sl - dx; box.scrollTop = drag.st - dy;
+  });
+  window.addEventListener('mouseup', () => { if (drag?.movio) { box.dataset.arrastro = '1'; setTimeout(() => delete box.dataset.arrastro, 50); } drag = null; box.classList.remove('arrastra'); });
+}
 
 /* Roca + corredores (estático, se dibuja una vez por layout) */
 function construirFondo(n, rows) {
@@ -661,15 +715,15 @@ function caminoEntre(ka, kb) {
   while (cola.length) { const q = cola.shift(); if (q.k === B.k) break; vecinos(q).forEach(v => { if (!prev.has(v.k)) { prev.set(v.k, q); cola.push(v); } }); }
   if (!prev.has(B.k)) return null;
   const sec = []; for (let q = B; q; q = prev.get(q.k)) sec.unshift(q);
-  const pts = [[A.x + RW / 2, A.y + 92]];
+  const pts = [[cxDe(A), A.y + 92]];
   for (let i = 0; i < sec.length - 1; i++) {
     const a = sec[i], b = sec[i + 1];
     if (a.r === b.r) { const y = a.y + 84, d = b.c > a.c ? 1 : -1, xa = d > 0 ? a.x + RW : a.x, xb = d > 0 ? b.x : b.x + RW;
       pts.push([a.x + RW / 2, y], [xa - d * 6, y], [xb + d * 6, y]); }
-    else { const x = a.x + RW / 2, d = b.r > a.r ? 1 : -1;
+    else { const x = cxDe(a.w ? b : a), d = b.r > a.r ? 1 : -1;
       if (d > 0) pts.push([x, a.y + RH - 6], [x, b.y + 4], [x, b.y + 34]); else pts.push([x, a.y + 34], [x, a.y + 4], [x, b.y + RH - 6]); }
   }
-  pts.push([B.x + RW / 2, B.y + 92]);
+  pts.push([cxDe(B), B.y + 92]);
   return pts;
 }
 function mandarMensajero(kOrigen, robotDestino, llamada, color, carga = 'caja') {
@@ -771,8 +825,9 @@ function cuartoBase(q, nombre, col, dim, t) {
   const hayArriba = [...cuartos.values()].some(o => o.c === q.c && o.r === q.r - 1);
   if (hayIzq) px(0, 76, 4, 16, T.puerta);
   if (hayDer) px(RW - 4, 76, 4, 16, T.puerta);
-  if (hayAbajo) px(RW / 2 - 9, RH - 4, 18, 4, T.puerta);
-  if (hayArriba) { px(RW / 2 - 9, 14, 18, 12, 'rgba(0,0,0,.45)'); px(RW / 2 - 9, 14, 18, 1, T.ladrilloLuz); }   // puerta de arriba
+  const pX = q.puertaX ?? RW / 2;
+  if (hayAbajo) px(pX - 9, RH - 4, 18, 4, T.puerta);
+  if (hayArriba) { px(pX - 9, 14, 18, 12, 'rgba(0,0,0,.45)'); px(pX - 9, 14, 18, 1, T.ladrilloLuz); }   // puerta de arriba
   // luces del cuarto (debajo de la placa)
   [RW / 2 - 30, RW / 2 + 30].forEach((tx, i) => luz(tx, 19, t + q.fase, i, dim));
   // placa con el nombre (izquierda); la productividad va a la derecha (ver productividad())
@@ -839,34 +894,13 @@ function salaLogistica(q, s, est, t, col) {
 function salaDigitacion(q, s, est, t, col) {
   const id = q.k.split('|')[0], m = meta(id);
   let subs = esGrupo(q.k) ? subKeys(q.k, true) : [];
-  /* Escritorio solo para los centros con movimiento (trabajando, error, pendientes o un OK en la última hora), máx. 4.
-     Los demás van en la PIZARRA de la derecha: centro + OK de hoy. Así caben los 14 centros. */
   const orden = x => PRIORIDAD.indexOf(estadoVista(x)) * 1000 - (resumen.get(x)?.ok_hoy || 0);
-  const activo = x => ['trabajando', 'error'].includes(estadoVista(x)) || (cargaDe(x)?.pendientes || 0) > 0
-    || (ultimoOk.get(x) && Date.now() - new Date(ultimoOk.get(x)).getTime() < 3600000);
-  const todosS = [...subs].sort((a, b) => orden(a) - orden(b));
-  let enMesa = subs.length <= 2 ? todosS : todosS.filter(activo).slice(0, 4);
-  if (!enMesa.length && todosS.length) enMesa = todosS.slice(0, 1);
-  const pizarra = todosS.filter(x => !enMesa.includes(x));
-  subs = enMesa;
-  const extra = 0, PZ = pizarra.length ? 58 : 0;   // ancho de la pizarra
-  if (PZ) {
-    const x0 = RW - PZ - 4, y0 = 27, h = RH - 34;
-    px(x0, y0, PZ, h, '#1f2937'); px(x0, y0, PZ, 2, col); px(x0 + 1, y0 + 2, PZ - 2, h - 3, '#111827');
-    const otros = pizarra.some(activo); texto(otros ? 'OTROS' : 'AL DÍA', x0 + PZ / 2, y0 + 9, 3, otros ? '#fde68a' : '#86efac', true);
-    const caben = Math.floor((h - 14) / 7), lista = pizarra.slice(0, pizarra.length > caben ? caben - 1 : caben);
-    lista.forEach((x, i) => {
-      const st = status.get(x), ok = resumen.get(x)?.ok_hoy || 0, e = estadoVista(x), dimP = ['caido', 'sindatos', 'durmiendo'].includes(e);
-      const nom = corta(st?.centro || String(x.split('|')[1]).replace(/^.* · /, '')).slice(0, 8);
-      px(x0 + 3, y0 + 14 + i * 7, 3, 3, ESTADOS[e].c);
-      texto(nom, x0 + 8, y0 + 17 + i * 7, 3, dimP ? '#6b7280' : '#e5e7eb', false, false);
-      texto(String(ok), x0 + PZ - 4 - ctx.measureText(String(ok)).width, y0 + 17 + i * 7, 3, ok ? '#86efac' : '#6b7280', false, false);
-    });
-    if (pizarra.length > lista.length) texto(`+${pizarra.length - lista.length} MÁS`, x0 + PZ / 2, y0 + 17 + lista.length * 7, 3, '#9ca3af', true, false);
-  }
+  let extra = 0;
+  const ancho = RW > RW0;   // cuarto grande (vista TODOS): caben todos los centros
+  if (!ancho && subs.length > 8) { const top = [...subs].sort((a, b) => orden(a) - orden(b)).slice(0, 7); extra = subs.length - 7; subs = subs.filter(x => top.includes(x)); }
   const puestos = subs.length ? subs : [null];
-  const n = puestos.length, cols = PZ ? Math.min(2, n) : Math.min(4, n), filas = Math.ceil(n / cols);
-  const cw = (RW - 8 - PZ - (PZ ? 2 : 0)) / cols, ch = (RH - 30) / filas, angosto = cw < 60;
+  const n = puestos.length + (extra ? 1 : 0), cols = ancho ? Math.min(n, Math.max(1, Math.floor((RW - 8) / 90))) : Math.min(4, n), filas = Math.ceil(n / cols);
+  const cw = (RW - 8) / cols, ch = (RH - 30) / filas, angosto = cw < 80;
   puestos.forEach((x, i) => {
     const c = i % cols, f = Math.floor(i / cols), cx = Math.round(4 + cw * c + cw / 2), y0 = Math.round(27 + ch * f);
     const e = x ? estadoVista(x) : est, st = x ? status.get(x) : null, ok = x ? (resumen.get(x)?.ok_hoy || 0) : 0, err = x ? (resumen.get(x)?.errores_hoy || 0) : 0;
@@ -1172,7 +1206,7 @@ function rutaJefe(kJ, kD) {
   if (base.length >= 4 && Math.abs(base[1][1] - (A.y + 84)) < 1) pts.push([base[2][0], A.y + 112], [base[2][0], A.y + 84], ...base.slice(3));   // puerta lateral
   else if (base[1][1] < A.y + 60) pts.push([A.x + 146, A.y + 112], [A.x + 146, A.y + 30], [A.x + C, A.y + 30], ...base.slice(2));                 // puerta de arriba: rodea el trono
   else pts.push(...base.slice(1));
-  const B = cuartos.get(kD); pts[pts.length - 1] = [B.x + C + 26, B.y + 104];
+  const B = cuartos.get(kD); pts[pts.length - 1] = [cxDe(B) + 26, B.y + 104];
   return pts;
 }
 function porInvestigar(ahora) {
@@ -1243,7 +1277,7 @@ function dibujarJefeFuera(t) {
   }
   if (INV.fase === 'investigar') {
     const B = cuartos.get(INV.k); if (!B) return;
-    const x = B.x + RW / 2 + 26, y = B.y + 104, p = (ahora - INV.t0) / INVESTIGAR_MS;
+    const x = cxDe(B) + 26, y = B.y + 104, p = (ahora - INV.t0) / INVESTIGAR_MS;
     jefeRey(x, y, t, { pose: 'pie', mano: 'tabla', mira: Math.sin(t / 700) });
     lupa(x - 16 + Math.sin(t / 350) * 7, y - 34 + Math.cos(t / 450) * 3, t);
     if (p < .6) {
@@ -1536,6 +1570,11 @@ function dichoDe(k, est, n) {
   return lista[n % lista.length];
 }
 function dibujarCuarto(q, t) {
+  if (!q.w) return dibujarCuarto1(q, t);
+  RW = q.w; RH = q.h;                          // el cuarto ancho se dibuja con su propio tamaño
+  try { return dibujarCuarto1(q, t); } finally { RW = RW0; RH = RH0; }
+}
+function dibujarCuarto1(q, t) {
   const [id] = q.k.split('|'), m = meta(id), s = statusDe(q.k);
   const fuera = !m.global && enCafe(q.k);
   const est = fuera ? 'ausente' : esGrupo(q.k) ? estadoVista(q.k) : estadoEfectivo(s, id), dim = !['trabajando', 'esperando', 'error', 'ausente', 'libre'].includes(est);
@@ -1619,7 +1658,7 @@ const tip = document.getElementById('tip');
 let tipCuarto = null, tipTimer = null;
 const cuartoEn = e => {
   const b = cv.getBoundingClientRect(), x = (e.clientX - b.left) / b.width * MW, y = (e.clientY - b.top) / b.height * MH;
-  return [...cuartos.values()].find(q => x >= q.x && x <= q.x + RW && y >= q.y && y <= q.y + RH);
+  return [...cuartos.values()].find(q => x >= q.x && x <= q.x + (q.w || RW) && y >= q.y && y <= q.y + (q.h || RH));
 };
 function cerrarTip() { tip.hidden = true; tipCuarto = null; clearTimeout(tipTimer); }
 function abrirTip(q, e) {
@@ -1642,6 +1681,7 @@ function abrirTip(q, e) {
   clearTimeout(tipTimer); tipTimer = setTimeout(cerrarTip, 8000);
 }
 cv.addEventListener('click', e => {
+  if (document.getElementById('mapaBox').dataset.arrastro) return;   // fue un arrastre para mover el mapa, no un clic
   const q = cuartoEn(e);
   if (!q || q.k === tipCuarto) { cerrarTip(); return; }
   abrirTip(q, e);
