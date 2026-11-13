@@ -13,6 +13,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { crearMonitor } from '../shared/monitor.mjs'
 import { armarCorreo } from './plantillas.mjs'
+import { salirSiKardex } from '../shared/kardex-pausa.mjs'
+await salirSiKardex('correos')   // pausa mientras Kardex actualiza inventario en esta PC
 
 const args = process.argv.slice(2)
 const AMBIENTE = args.includes('--prod') ? 'prod' : args.includes('--qa') ? 'qa' : (process.env.AMBIENTE || 'qa').toLowerCase()

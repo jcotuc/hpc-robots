@@ -11,6 +11,8 @@ import { crearMonitor } from '../shared/monitor.mjs'
 import { mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { abrirCSHP, cerrarCSHP, leerLlamada, cshpResponde, pendientesGuias } from './cshp.mjs'
 import { investigar, recordar } from './investigar.mjs'
+import { salirSiKardex } from '../shared/kardex-pausa.mjs'
+await salirSiKardex('jefe')   // pausa mientras Kardex actualiza inventario en esta PC
 
 const E = process.env, args = process.argv.slice(2)
 const PROD = args.includes('--prod') || (!args.includes('--qa') && /^prod/i.test(E.AMBIENTE || ''))

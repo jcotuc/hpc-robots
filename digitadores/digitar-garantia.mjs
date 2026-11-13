@@ -27,6 +27,8 @@ import { createClient } from '@supabase/supabase-js'
 import { crearMonitor } from '../shared/monitor.mjs'
 import { hostname } from 'node:os'
 import { mkdirSync, readFileSync, writeFileSync, appendFileSync, openSync, closeSync, unlinkSync, statSync } from 'node:fs'
+import { salirSiKardex } from '../shared/kardex-pausa.mjs'
+await salirSiKardex('digitadores')   // pausa mientras Kardex actualiza inventario en esta PC
 
 // ─── Configuración ───────────────────────────────────────────────────────────
 const arg = (a) => process.argv.includes(a)

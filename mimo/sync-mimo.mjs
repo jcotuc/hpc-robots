@@ -17,6 +17,8 @@ import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { crearMonitor } from '../shared/monitor.mjs'
 import { mkdirSync, openSync, writeSync, closeSync, readFileSync, unlinkSync, statSync } from 'node:fs'
+import { salirSiKardex } from '../shared/kardex-pausa.mjs'
+await salirSiKardex('mimo')   // pausa mientras Kardex actualiza inventario en esta PC
 
 // ─── Configuración ───────────────────────────────────────────────────────────
 // Ambiente: --qa / --prod lo fuerzan (npm run sync / npm run sync:prod). Sin bandera usa AMBIENTE del .env (por defecto qa)

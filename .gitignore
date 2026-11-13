@@ -13,3 +13,6 @@ grabaciones/
 auditadas.json
 
 centros-dungeon.json
+
+# Pausa general mientras corre Kardex
+.pausa-kardex

@@ -16,6 +16,8 @@ import { fileURLToPath } from 'node:url'
 import * as cheerio from 'cheerio'
 import ExcelJS from 'exceljs'
 import { crearMonitor } from '../shared/monitor.mjs'
+import { salirSiKardex } from '../shared/kardex-pausa.mjs'
+await salirSiKardex('truper')   // pausa mientras Kardex actualiza inventario en esta PC
 
 const DIR = path.dirname(fileURLToPath(import.meta.url))
 const BASE = 'https://www.truper.com/CatVigente'

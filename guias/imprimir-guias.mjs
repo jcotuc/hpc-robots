@@ -22,6 +22,8 @@ import { mkdirSync, openSync, writeSync, closeSync, readFileSync, writeFileSync,
 import { createHash } from 'node:crypto'
 import { impresorasDelEnv, impresoraPredeterminada, usarImpresora } from './impresoras.mjs'
 import { crearMonitor } from '../shared/monitor.mjs'
+import { salirSiKardex } from '../shared/kardex-pausa.mjs'
+await salirSiKardex('guias')   // pausa mientras Kardex actualiza inventario en esta PC
 
 // ─── Configuración ───────────────────────────────────────────────────────────
 const PROD = process.argv.includes('--prod') || (!process.argv.includes('--qa') && /^prod/i.test(process.env.AMBIENTE || ''))
