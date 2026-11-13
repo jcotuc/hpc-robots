@@ -188,6 +188,30 @@ def a_filas(df, prefijos):
     return list(agrup.values()), invalidas
 
 
+def cerrar_kardex():
+    """Cierra KardexWmsSap al terminar (bien o mal). Primero cierre normal; si no responde, lo termina."""
+    try:
+        from pywinauto import Application
+        try:
+            app = Application(backend="win32").connect(path="KardexWmsSap.exe", timeout=3)
+        except Exception:
+            from kardex_wms import TITULO
+            app = Application(backend="win32").connect(title=TITULO, timeout=3)
+        try:
+            app.top_window().close()
+        except Exception:
+            pass
+        for _ in range(10):
+            if not app.is_process_running():
+                break
+            time.sleep(1)
+        if app.is_process_running():
+            app.kill()
+        log.info("   Kardex cerrado")
+    except Exception as e:
+        log.info(f"   Kardex no estaba abierto o no se pudo cerrar ({str(e).splitlines()[0][:120]})")
+
+
 def exportar_diferencias(sb, carga_id):
     filas, pag = [], 1000   # la API devuelve máximo 1000 filas por llamada: paginar
     while True:
@@ -327,6 +351,8 @@ def main():
         mon.estado("error", str(e), e)
         return 1
     finally:
+        if not desde_archivo:
+            cerrar_kardex()
         if pausado:
             try:
                 PAUSA_PC.unlink(missing_ok=True)
