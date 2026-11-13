@@ -162,6 +162,12 @@ const ROBOTS = [
   /* Catálogo Truper (truper/scraper.mjs): corre el día 1 de cada mes, 2–3 h. manual = entre meses no reportar no es falla.
      El Jefe calcula su carga: 1 si falta el catálogo del mes, 0 si ya está (→ cafetería) */
   { id: 'truper',      nombre: 'Catálogo Truper', sala: 'catalogo', centro: COMUN, manual: true, color: '#f97316', look: 'casco', intervalo: 600 },
+  /* Repuestos (app /repuestos de ConsumosCS). Kardex corre 3 veces al día (6:30, 12:30, 17:30): reporta intervalo 3.5 h,
+     así que si se salta una lectura sale CAÍDO */
+  { id: 'solicitud-repuestos', nombre: 'Solicitud repuestos', sala: 'repuestos', centro: 'Nodus', color: '#34d399', look: 'gorra', horario: { dias: LS, desde: '06:00', hasta: '22:00' } },
+  { id: 'despacho-repuestos',  nombre: 'Despacho repuestos',  sala: 'repuestos', centro: 'Nodus', color: '#a3e635', look: 'casco', horario: { dias: LS, desde: '06:00', hasta: '22:00' } },
+  { id: 'auditor-repuestos',   nombre: 'Auditor repuestos',   sala: 'repuestos', centro: 'Nodus', color: '#e879f9', look: 'lentes', horario: { dias: LS, desde: '06:00', hasta: '22:00' } },
+  { id: 'kardex',              nombre: 'Kardex inventario',   sala: 'kardex',    centro: 'Nodus', color: '#38bdf8', look: 'corbata', horario: { dias: LS, desde: '06:30', hasta: '18:30' } },
   // { id: 'mimo', nombre: 'MiMo', sala: 'recepcion', color: '#fb923c', horario: { dias: LS, desde: '05:55', hasta: '20:25' } },
 ];
 /* Flujos reales entre robots: la misma llamada pasa de un robot al otro.

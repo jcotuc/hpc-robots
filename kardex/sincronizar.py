@@ -268,7 +268,7 @@ def main():
         return
 
     desde_archivo = bool(args.archivo)
-    mon = Monitor("kardex", intervalo_seg=int(os.environ.get("INTERVALO_SEG", "23400")), activo=not desde_archivo)
+    mon = Monitor("kardex", intervalo_seg=int(os.environ.get("INTERVALO_SEG", "12600")), activo=not desde_archivo)
     cfg = config(sb)
     if cfg.get("robot_kardex_activo") is False:
         log.info("⏹️  robot_kardex_activo = false: no hago nada")

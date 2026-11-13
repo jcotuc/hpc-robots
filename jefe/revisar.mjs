@@ -37,8 +37,11 @@ const LS = [1, 2, 3, 4, 5, 6]
 const HORARIOS = {
   citas: { dias: LS, desde: '06:00', hasta: '22:00' }, guias: { dias: LS, desde: '07:00', hasta: '20:00' },
   digitadores: { dias: LS, desde: '06:00', hasta: '22:00' }, correos: { dias: LS, desde: '07:00', hasta: '20:00' },
+  'solicitud-repuestos': { dias: LS, desde: '06:00', hasta: '22:00' }, 'despacho-repuestos': { dias: LS, desde: '06:00', hasta: '22:00' },
+  'auditor-repuestos': { dias: LS, desde: '06:00', hasta: '22:00' }, kardex: { dias: LS, desde: '06:30', hasta: '18:30' },
 }
-const NOMBRES = { citas: 'Citas', guias: 'Guías', digitadores: 'Digitadores', correos: 'Correos', garantias: 'Garantías', truper: 'Catálogo Truper' }
+const NOMBRES = { citas: 'Citas', guias: 'Guías', digitadores: 'Digitadores', correos: 'Correos', garantias: 'Garantías', truper: 'Catálogo Truper',
+  'solicitud-repuestos': 'Solicitud de repuestos', 'despacho-repuestos': 'Despacho de repuestos', 'auditor-repuestos': 'Auditor de repuestos', kardex: 'Kardex (inventario)' }
 /* Robots que se corren a mano: si no reportan no es falla; solo importa si tienen pendientes esperando */
 const MANUALES = ['garantias', 'truper']   // truper: corre solo el día 1 de cada mes (ver revisarTruper)
 const GARANTIA_ESPERA_MIN = Number(E.GARANTIA_ESPERA_MIN || 60)

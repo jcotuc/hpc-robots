@@ -1,0 +1,22 @@
+{
+  "name": "hpc-despacho-repuestos",
+  "private": true,
+  "type": "module",
+  "description": "Robot de despacho de repuestos: en CSHP HH carga los repuestos pickeados a la llamada (usuario de bodega)",
+  "scripts": {
+    "leer": "node --env-file=.env despachar.mjs --qa --solo-leer --lento",
+    "leer:prod": "node --env-file=.env despachar.mjs --prod --solo-leer --visible",
+    "prueba": "node --env-file=.env despachar.mjs --qa --prueba --lento",
+    "qa": "node --env-file=.env despachar.mjs --qa --lento",
+    "prod:visible": "node --env-file=.env despachar.mjs --prod --visible",
+    "prod": "node --env-file=.env despachar.mjs --prod",
+    "grabar": "playwright codegen https://tallerqa.hpc.com.gt/CSHP/HH/HH.aspx",
+    "grabar:prod": "playwright codegen https://taller.hpc.com.gt/CSHP/HH/HH.aspx",
+    "listar": "node --env-file=.env despachar.mjs --prod --solo-listar",
+    "revisar": "node --env-file=.env despachar.mjs --prod --solo-leer --app --visible"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "playwright": "1.64.1"
+  }
+}

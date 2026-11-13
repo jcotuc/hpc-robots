@@ -266,6 +266,15 @@ BEGIN
     ON CONFLICT (sku, ubicacion) DO NOTHING;
     UPDATE public.rep_kardex_diferencias SET aplicado = true
      WHERE carga_id = _carga_id AND accion IN ('actualizar','a_cero','nuevo');
+    -- Todo lo que coincidió con WMS queda con la hora de esta corrida (verificado) y la descripción de WMS
+    UPDATE public.rep_existencias e
+       SET actualizado_en = now(), descripcion = coalesce(nullif(btrim(w.descripcion),''), e.descripcion)
+      FROM _kx_wms w
+     WHERE upper(btrim(e.sku)) = w.sku AND upper(btrim(e.ubicacion)) = w.ubic
+       AND upper(btrim(coalesce(e.bodega,''))) = ANY (v_bodegas)
+       AND NOT EXISTS (SELECT 1 FROM public.rep_kardex_diferencias d
+                        WHERE d.carga_id = _carga_id AND d.accion = 'revisar'
+                          AND d.sku_app = e.sku AND d.ubicacion_app = e.ubicacion);
   END IF;
 
   SELECT jsonb_build_object(

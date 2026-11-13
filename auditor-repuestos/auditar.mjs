@@ -27,6 +27,9 @@ const USUARIO = process.env.CSHP_USUARIO, PASSWORD = process.env.CSHP_PASSWORD
 const PARA = (process.env.AUDITOR_PARA || '').split(/[,;]/).map((x) => x.trim()).filter(Boolean)
 const ESPERA_MS = Number(process.env.ESPERA_MIN || 2) * 60_000
 const MAX_LLAMADAS = Number(process.env.MAX_LLAMADAS || 15)
+const MIN = (k, d) => Number(process.env[k] || d) * 60_000
+const TRABA = { pendiente: MIN('TRABA_PENDIENTE_MIN', 10), bodega: MIN('TRABA_BODEGA_MIN', 60), pickeado: MIN('TRABA_PICKEADO_MIN', 15), kb: MIN('TRABA_KB_MIN', 30) }
+const RESUMEN_HORA = process.env.RESUMEN_HORA || '18:00'   // resumen del día por correo (una vez, desde esta hora)
 const sinCeros = (x) => String(x ?? '').trim().replace(/^0+/, '')
 const U = (x) => String(x ?? '').trim().toUpperCase()
 
@@ -147,14 +150,106 @@ ${filas.replace(/<td/g, `<td ${td}`)}
   return data?.[0]?.id ?? null
 }
 
+// ─── Trabas: lo que se quedó detenido (solo base de datos, no abre CSHP) ───────
+const minDesde = (ts) => Math.round((Date.now() - Date.parse(ts)) / 60_000)
+async function revisarTrabas() {
+  const hace3d = new Date(Date.now() - 3 * 86400_000).toISOString()
+  const sols = await todas(() => sb.from('rep_solicitudes')
+    .select('id, num_llamada, estado, created_at, error_motivo, solicitante_nombre, rep_solicitud_lineas(id, sku, cantidad, estado, autoservicio, ubicacion_origen, cargado_cshp_en, pickeado_en, inventario_descontado_en, error_motivo)')
+    .gte('created_at', hace3d).neq('estado', 'cancelada').order('id'))
+  const ahora = Date.now(), t = []
+  for (const s of sols) {
+    const ls = s.rep_solicitud_lineas || []
+    if (s.estado === 'pendiente' && ahora - Date.parse(s.created_at) > TRABA.pendiente)
+      t.push({ clave: `pend:${s.id}`, llamada: s.num_llamada, que: 'Sin cargar a CSHP', detalle: `Pedida por ${s.solicitante_nombre} hace ${minDesde(s.created_at)} min y el robot de solicitud no la ha cargado` })
+    if (s.estado === 'error_cshp')
+      t.push({ clave: `err_cshp:${s.id}`, llamada: s.num_llamada, que: 'Error al cargar a CSHP', detalle: s.error_motivo || 'Sin motivo' })
+    const sinAtender = ls.filter((l) => !l.autoservicio && l.estado === 'cargado_cshp' && l.cargado_cshp_en)
+    if (sinAtender.length && ['en_cshp', 'en_bodega'].includes(s.estado)) {
+      const desde = sinAtender.map((l) => l.cargado_cshp_en).sort()[0]
+      if (ahora - Date.parse(desde) > TRABA.bodega)
+        t.push({ clave: `bodega:${s.id}`, llamada: s.num_llamada, que: 'Bodega no la ha atendido', detalle: `${sinAtender.length} repuesto(s) en CSHP hace ${minDesde(desde)} min sin pickear ni marcar "no hay": ${sinAtender.map((l) => l.sku).join(', ')}` })
+    }
+    for (const l of ls) {
+      if (l.estado === 'error_despacho')
+        t.push({ clave: `err_desp:${l.id}`, llamada: s.num_llamada, que: 'Error al despachar en HH', detalle: `${l.sku}@${l.ubicacion_origen || '?'}: ${l.error_motivo || 'sin motivo'}` })
+      else if (!l.autoservicio && l.estado === 'pickeado' && l.pickeado_en && ahora - Date.parse(l.pickeado_en) > TRABA.pickeado)
+        t.push({ clave: `pick:${l.id}`, llamada: s.num_llamada, que: 'Pickeado sin despachar', detalle: `${l.sku}@${l.ubicacion_origen} pickeado hace ${minDesde(l.pickeado_en)} min y el robot de despacho no lo ha registrado en HH` })
+      else if (l.autoservicio && !l.inventario_descontado_en && l.cargado_cshp_en && ['cargado_cshp', 'error_despacho'].includes(l.estado) && ahora - Date.parse(l.cargado_cshp_en) > TRABA.kb)
+        t.push({ clave: `kb:${l.id}`, llamada: s.num_llamada, que: 'Autoservicio KB sin descargar', detalle: `${l.sku}@${l.ubicacion_origen}: retirado por el técnico hace ${minDesde(l.cargado_cshp_en)} min y sigue en cuarentena` })
+    }
+  }
+  if (!t.length) return 0
+  const { data: ya, error: e1 } = await sb.from('rep_trabas_avisadas').select('clave').in('clave', t.map((x) => x.clave))
+  if (e1) throw new Error(`rep_trabas_avisadas: ${e1.message}`)
+  const avisadas = new Set((ya || []).map((x) => x.clave))
+  const nuevas = t.filter((x) => !avisadas.has(x.clave))
+  for (const x of nuevas) log(`   ⏳ ${x.llamada} · ${x.que} · ${x.detalle}`)
+  if (!nuevas.length || SOLO) return nuevas.length
+  const td = 'style="border:1px solid #ddd;padding:6px"'
+  const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px">
+<p>Hay <b>${nuevas.length}</b> solicitud(es)/repuesto(s) de repuestos detenido(s):</p>
+<table style="border-collapse:collapse"><tr style="background:#f3f4f6"><th ${td}>Llamada</th><th ${td}>Qué pasa</th><th ${td}>Detalle</th></tr>
+${nuevas.map((x) => `<tr><td ${td}><b>${esc(x.llamada)}</b></td><td ${td}>${esc(x.que)}</td><td ${td}>${esc(x.detalle)}</td></tr>`).join('\n')}
+</table><p style="color:#6b7280;font-size:12px">Cada traba se avisa una sola vez · ${new Date().toLocaleString('es-GT', { timeZone: 'America/Guatemala' })} · robot auditor-repuestos</p></div>`
+  const clave = `auditor_trabas:${createHash('sha1').update(nuevas.map((x) => x.clave).sort().join(',')).digest('hex').slice(0, 16)}`
+  const { data, error } = await sb.from('correos_cola').upsert({ tipo: 'auditor_repuestos', para: PARA, asunto: `⏳ Repuestos detenidos: ${nuevas.length}`, html,
+    referencia: nuevas[0].llamada, clave, datos: { trabas: nuevas.length } }, { onConflict: 'clave', ignoreDuplicates: true }).select('id')
+  if (error) throw new Error(`No se pudo encolar el correo de trabas: ${error.message}`)
+  const { error: e2 } = await sb.from('rep_trabas_avisadas').upsert(nuevas.map((x) => ({ clave: x.clave, num_llamada: x.llamada, detalle: `${x.que}: ${x.detalle}`.slice(0, 500), correo_id: data?.[0]?.id ?? null })), { onConflict: 'clave', ignoreDuplicates: true })
+  if (e2) throw new Error(`rep_trabas_avisadas: ${e2.message}`)
+  resumen(`TRABAS ${nuevas.length} nueva(s) · correo encolado`)
+  return nuevas.length
+}
+
+// ─── Resumen del día (un correo, la primera corrida desde RESUMEN_HORA) ───────
+const mediana = (xs) => { const v = xs.filter((x) => x != null).map(Number).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 2)] : null }
+async function resumenDelDia() {
+  const hoy = fechaGT()
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Guatemala', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date()).map((x) => [x.type, x.value]))
+  const [rh, rm] = RESUMEN_HORA.split(':').map(Number)
+  if (SOLO || (+p.hour % 24) * 60 + +p.minute < rh * 60 + (rm || 0)) return
+  const clave = `auditor_resumen:${hoy}`
+  const { data: ya } = await sb.from('correos_cola').select('id').eq('clave', clave).maybeSingle()
+  if (ya) return
+  const ini = new Date(`${hoy}T00:00:00-06:00`).toISOString()
+  const tiempos = (await sb.from('rep_tiempos').select('*').eq('dia', hoy)).data || []
+  const aud = (await sb.from('rep_auditoria').select('resultado').gte('creado_en', ini)).data || []
+  const trabas = (await sb.from('rep_trabas_avisadas').select('clave').gte('avisado_en', ini)).data || []
+  const kx = (await sb.from('rep_kardex_cargas').select('creada_en, estado, resumen').gte('creada_en', ini).order('id')).data || []
+  const td = 'style="border:1px solid #ddd;padding:6px"'
+  const fila = (a, b) => `<tr><td ${td}>${a}</td><td ${td}><b>${b ?? '—'}</b></td></tr>`
+  const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px"><p><b>Repuestos Nodus · ${hoy}</b></p>
+<table style="border-collapse:collapse">
+${fila('Solicitudes', tiempos.length)}
+${fila('Pedido → en CSHP (mediana, min)', mediana(tiempos.map((x) => x.min_a_cshp)))}
+${fila('En CSHP → pickeado (mediana, min)', mediana(tiempos.map((x) => x.min_bodega)))}
+${fila('Pickeado → despachado (mediana, min)', mediana(tiempos.map((x) => x.min_despacho)))}
+${fila('Total pedido → despachado (mediana, min)', mediana(tiempos.map((x) => x.min_total)))}
+${fila('Auditoría app vs CSHP', `${aud.filter((a) => a.resultado === 'ok').length} ok · ${aud.filter((a) => a.resultado === 'falla').length} con diferencia`)}
+${fila('Trabas avisadas', trabas.length)}
+${fila('Lecturas de Kardex', kx.map((k) => `${new Date(k.creada_en).toLocaleTimeString('es-GT', { timeZone: 'America/Guatemala', hour: '2-digit', minute: '2-digit', hour12: false })} ${k.estado}${k.resumen?.actualizar != null ? ` (${k.resumen.actualizar + k.resumen.nuevo + k.resumen.a_cero} corregidas, ${k.resumen.revisar} a revisar)` : ''}`).join('<br>') || 'Ninguna')}
+</table><p style="color:#6b7280;font-size:12px">robot auditor-repuestos</p></div>`
+  const { error } = await sb.from('correos_cola').upsert({ tipo: 'auditor_repuestos', para: PARA, asunto: `📊 Repuestos Nodus ${hoy}: ${tiempos.length} solicitud(es)`, html,
+    referencia: `resumen ${hoy}`, clave, datos: { dia: hoy } }, { onConflict: 'clave', ignoreDuplicates: true })
+  if (error) log(`⚠️ No se pudo encolar el resumen del día: ${error.message}`); else { log('📊 Resumen del día encolado'); resumen('RESUMEN del día encolado') }
+}
+
 // ─── Principal ─────────────────────────────────────────────────────────────
 async function main() {
   log(`\n=== Auditor de repuestos · CSHP ${BASE} · desde ${fechaGT(DESDE)}${SOLO ? ' · SOLO MOSTRAR (no guarda ni manda correo)' : ''} ===`)
   const { data: cfg } = await sb.from('rep_config').select('valor').eq('clave', 'robot_auditor_activo').maybeSingle()
   if (cfg && cfg.valor === false) { log('⏹️  robot_auditor_activo = false'); mon.fin('Apagado en la app'); await mon.flush(); return }
 
+  let trabas = 0
+  try { trabas = await revisarTrabas() } catch (e) { log(`⚠️ No se pudieron revisar trabas: ${corto(e)}`) }
+  try { await resumenDelDia() } catch (e) { log(`⚠️ Resumen del día: ${corto(e)}`) }
   const tareas = await pendientes()
-  if (!tareas.length) { log('✔️  Nada nuevo que auditar'); mon.fin('Sin pendientes'); await mon.flush(); return }
+  if (!tareas.length) {
+    log(`✔️  Nada nuevo que auditar en CSHP${trabas ? ` · ${trabas} traba(s) nueva(s)` : ''}`)
+    if (trabas) mon.revisar(null, `${trabas} solicitud(es)/repuesto(s) detenido(s) · correo enviado`)
+    mon.fin(trabas ? `${trabas} traba(s) avisada(s)` : 'Sin pendientes'); await mon.flush(); return
+  }
   const porLlamada = new Map()
   for (const t of tareas) { const k = t.l.rep_solicitudes.num_llamada; (porLlamada.get(k) || porLlamada.set(k, []).get(k)).push(t) }
   const llamadas = [...porLlamada.keys()].slice(0, MAX_LLAMADAS)

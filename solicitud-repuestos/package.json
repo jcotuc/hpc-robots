@@ -1,0 +1,24 @@
+{
+  "name": "hpc-solicitud-repuestos",
+  "private": true,
+  "type": "module",
+  "description": "Robot de solicitud de repuestos: asigna el técnico y agrega los repuestos solicitados a la llamada en CSHP (usuario genérico de técnico)",
+  "scripts": {
+    "verificar": "node --env-file=.env verificar.mjs",
+    "qa": "node --env-file=.env solicitar-repuestos.mjs --qa --lento",
+    "prod:visible": "node --env-file=.env solicitar-repuestos.mjs --prod --visible",
+    "prod": "node --env-file=.env solicitar-repuestos.mjs --prod",
+    "prueba": "node --env-file=.env solicitar-repuestos.mjs --qa --prueba --lento",
+    "leer": "node --env-file=.env solicitar-repuestos.mjs --qa --solo-leer --lento",
+    "leer:prod": "node --env-file=.env solicitar-repuestos.mjs --prod --solo-leer --visible",
+    "grabar": "playwright codegen https://tallerqa.hpc.com.gt/CSHP",
+    "grabar:prod": "playwright codegen https://taller.hpc.com.gt/CSHP",
+    "existencia": "node --env-file=.env existencias.mjs",
+    "listar": "node --env-file=.env solicitar-repuestos.mjs --prod --solo-listar",
+    "reintentar": "node --env-file=.env reintentar.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "playwright": "1.64.1"
+  }
+}
