@@ -1,7 +1,7 @@
 """
 Robot Kardex → inventario de la app de repuestos (Supabase ConsumosCS).
 
-  1. Pausa los robots de ESTA PC (archivo hpc-robots\.pausa-kardex, ver shared/kardex-pausa.mjs)
+  1. Pausa los robots de ESTA PC (archivo hpc-robots/.pausa-kardex, ver shared/kardex-pausa.mjs)
   2. Extrae ExistenciaWMS de KardexWmsSap.exe (kardex_wms.py)
   3. Sube las filas CS/KB a rep_kardex_existencias (una "carga")
   4. rep_kardex_comparar cruza contra rep_existencias respetando apartados y,
