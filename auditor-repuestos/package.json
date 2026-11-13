@@ -1,0 +1,15 @@
+{
+  "name": "hpc-auditor-repuestos",
+  "private": true,
+  "type": "module",
+  "description": "Auditor de repuestos: revisa en CSHP (solo lectura) que lo solicitado y despachado en la app quedó igual en la llamada",
+  "scripts": {
+    "mostrar": "node --env-file=.env auditar.mjs --solo-mostrar",
+    "mostrar:visible": "node --env-file=.env auditar.mjs --solo-mostrar --visible",
+    "auditar": "node --env-file=.env auditar.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.0",
+    "playwright": "1.64.1"
+  }
+}
