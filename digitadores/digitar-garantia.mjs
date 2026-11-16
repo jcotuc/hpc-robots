@@ -702,7 +702,7 @@ async function procesar(page, a) {
     const st = await statusActual(page)
     const { accion, catForm, catCSHP, ordenJefe: orden } = await decisionSku(a.producto_sku, sku, numero)
     const mismaCategoria = !!accion
-    const abierta = !/cerrad/i.test(st) && (await vecesEnLog(page, 'T - Facturación')) === 0
+    const abierta = normalizar(st) === normalizar('T - En Ruta') // solo el status actual
     const desc = (c) => (c ? `${c.familia} · ${c.nombre}` : 'sin categoría en el catálogo')
     if (accion === 'mismo' && abierta) {
       // El formulario trae una descripción, no un SKU, y coincide con el producto de CSHP: se deja el SKU de CSHP
@@ -731,20 +731,10 @@ async function procesar(page, a) {
     }
   }
   // Ya digitada en CSHP (alguien la facturó antes): no se toca nada, solo se marca digitada en la Bandeja
-  const yaFacturada = await vecesEnLog(page, 'T - Facturación')
+  // Solo cuenta el status ACTUAL (el historial no importa). Solo se digita en T - En Ruta; en cualquier
+  // otro (incluso Facturación, Pend. Entrega, Logística o Cerrado) queda pendiente para revisión humana.
   const actual = await statusActual(page)
-  log(`   ↳ CSHP: status ${actual || '?'}${yaFacturada > 0 ? ` · ya tiene T - Facturación en el log${normalizar(actual) === normalizar('T - En Ruta') ? ' (anterior: volvió a En Ruta, se digita de nuevo)' : ''}` : ''}`)
-  // Solo es "ya digitada" si el status ACTUAL ya pasó de En Ruta. Una llamada puede volver a En Ruta
-  // después de haberse facturado (reingreso/devolución): ese T - Facturación viejo del log no cuenta.
-  const enRuta = normalizar(actual) === normalizar('T - En Ruta')
-  if (!enRuta && (yaFacturada > 0 || /cerrad/i.test(actual))) {
-    const st = actual || await ultimoStatus(page)
-    await marcarDigitada(a)
-    anotar(destino, 'ya_digitada', { estado: 'completa', status: st })
-    log(`   ✔️ Ya estaba digitada en CSHP (status ${st || 'cerrada'}): solo se marca digitada en la Bandeja`)
-    resumen(`${numero}  YA DIGITADA  CSHP en ${st || 'cerrada'}`)
-    return 'ya'
-  }
+  log(`   ↳ CSHP: status ${actual || '?'}`)
   // LLM que también van a Logística - Envío: cliente CEMACO (incluye CONSTRUCEMACO) Y comentario con código OPE-.
   // Se exigen las DOS señales; si solo aparece una, se queda en Facturación y se avisa en el log.
   let pasaLogistica = esLLS
@@ -770,8 +760,10 @@ async function procesar(page, a) {
   // Solo se digita desde los status donde CSHP permite pasar a Facturación (108). Si está en otro
   // (p. ej. T - Pend. Repuesto), NO se toca nada y queda pendiente para un digitador.
   const STATUS_OK = (process.env.CSHP_STATUS_PERMITIDOS || 'T - En Ruta').split('|').map((x) => normalizar(x))
-  if (actual && !STATUS_OK.includes(normalizar(actual))) {
-    const motivo = `En CSHP está en "${actual}" y desde ahí no se puede pasar a Facturación. No se cambió nada en CSHP`
+  if (!STATUS_OK.includes(normalizar(actual))) {
+    const motivo = actual
+      ? `En CSHP está en "${actual}" (solo se digita en T - En Ruta); revisar si ya fue digitada. No se cambió nada en CSHP`
+      : 'No se pudo leer el status en CSHP; solo se digita en T - En Ruta. No se cambió nada en CSHP'
     await dejarPendiente(a, motivo)
     anotar(destino, 'pendiente', { estado: 'pendiente', motivo })
     log(`   ⏸️  ${numero}: ${motivo}`)
