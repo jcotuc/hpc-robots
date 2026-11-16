@@ -733,8 +733,11 @@ async function procesar(page, a) {
   // Ya digitada en CSHP (alguien la facturó antes): no se toca nada, solo se marca digitada en la Bandeja
   const yaFacturada = await vecesEnLog(page, 'T - Facturación')
   const actual = await statusActual(page)
-  log(`   ↳ CSHP: status ${actual || '?'}${yaFacturada > 0 ? ' · ya tiene T - Facturación en el log' : ''}`)
-  if (yaFacturada > 0 || /cerrad/i.test(actual)) {
+  log(`   ↳ CSHP: status ${actual || '?'}${yaFacturada > 0 ? ` · ya tiene T - Facturación en el log${normalizar(actual) === normalizar('T - En Ruta') ? ' (anterior: volvió a En Ruta, se digita de nuevo)' : ''}` : ''}`)
+  // Solo es "ya digitada" si el status ACTUAL ya pasó de En Ruta. Una llamada puede volver a En Ruta
+  // después de haberse facturado (reingreso/devolución): ese T - Facturación viejo del log no cuenta.
+  const enRuta = normalizar(actual) === normalizar('T - En Ruta')
+  if (!enRuta && (yaFacturada > 0 || /cerrad/i.test(actual))) {
     const st = actual || await ultimoStatus(page)
     await marcarDigitada(a)
     anotar(destino, 'ya_digitada', { estado: 'completa', status: st })
