@@ -308,6 +308,17 @@ const flujo = new Map();     // llamada -> { de, pc, a, at, impresa }  (lo que v
 let jefeVa = null, jefeDesde = 0, jefeAntes = null;   // cuarto al que fue el jefe (y de dónde venía)
 
 const key = (r, pc) => `${r}|${pc}`;
+/* El centro que reporta un robot con nombre mal escrito ("ElRancho", "El aRancho", "Coban") se acomoda en su nivel correcto */
+const _claveC = n => String(n ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function _distC(a, b) { const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]); for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[a.length][b.length]; }
+function centroCanon(s) {
+  if (!s?.centro) return s;
+  const k = _claveC(s.centro), num = x => x.replace(/\D/g, '');
+  if (k === 'zona6') return { ...s, centro: 'Nodus' };
+  const m = CENTROS.filter(c => num(_claveC(c.id)) === num(k)).map(c => ({ c: c.id, d: _distC(k, _claveC(c.id)) })).sort((a, b) => a.d - b.d)[0];
+  return m && m.d <= (k.length >= 6 ? 2 : 1) ? { ...s, centro: m.c } : s;
+}
 const meta = id => ROBOTS.find(r => r.id === id) || { id, nombre: id, color: '#e9e3f2' };
 /* ---------- Robots en grupo (Digitadores): un solo cuarto "id|*" con un puesto por cada reporte (uno por centro) ---------- */
 const esGrupo = k => k.endsWith('|*');
@@ -1814,7 +1825,7 @@ async function initSupabase() {
       sb.from('robot_eventos').select('robot, pc, tipo, llamada, mensaje, created_at').gte('created_at', new Date(Date.now() - 2 * 86400000).toISOString()).order('created_at').limit(8000),
     ]);
     if (st.error) { document.getElementById('sub').textContent = 'Error leyendo Supabase: ' + st.error.message; return; }
-    status.clear(); st.data.forEach(s => status.set(key(s.robot, s.pc), s));
+    status.clear(); st.data.forEach(s => status.set(key(s.robot, s.pc), centroCanon(s)));
     resumen.clear(); (rs.data || []).forEach(x => resumen.set(key(x.robot, x.pc), x));
     eventos = ev.data || [];
     areaStats.clear(); ultimoOk.clear(); flujo.clear();
@@ -1844,7 +1855,7 @@ async function initSupabase() {
   sb.channel('monitor')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'robot_status' }, p => {
       const s = p.new && p.new.robot ? p.new : null; if (!s) return;
-      status.set(key(s.robot, s.pc), s); quizasLayout(); renderCards();
+      status.set(key(s.robot, s.pc), centroCanon(s)); quizasLayout(); renderCards();
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'robot_eventos' }, p => {
       eventos.unshift(p.new); eventos = eventos.slice(0, 100); contarEvento(p.new, true);
