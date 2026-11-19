@@ -78,3 +78,13 @@ export function imprimirPdf(archivo, impresora, ajuste = (process.env.IMPRESION_
       })
   })
 }
+
+/** Papel predeterminado del controlador de la impresora, en pulgadas: { w, h, nombre } o null */
+export function papelImpresora(nombre) {
+  try {
+    const r = ps(`Add-Type -AssemblyName System.Drawing; $s = New-Object System.Drawing.Printing.PrinterSettings; $s.PrinterName = ${comillas(nombre)}; $p = $s.DefaultPageSettings.PaperSize; "$($p.Width)|$($p.Height)|$($p.PaperName)"`)
+    const [w, h, n] = r.split('|')
+    if (!(Number(w) > 0 && Number(h) > 0)) return null
+    return { w: Number(w) / 100, h: Number(h) / 100, nombre: n }
+  } catch { return null }
+}
