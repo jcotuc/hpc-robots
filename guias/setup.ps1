@@ -74,6 +74,7 @@ if ($crear) {
   $centro = Read-Host '  Centro de servicio en CSHP: codigo o nombre, ej. HPCS016 o Morales [HPCS016]'
   if (-not $centro) { $centro = 'HPCS016' }
   $pc = Read-Host '  Nombre de esta PC para el monitor, ej. Guias Morales'
+  $mcentro = Read-Host '  Centro en el monitor (dungeon), ej. Morales [Enter = Nodus]'
   $modo = Read-Host '  Modo de impresion: pdf (sin ventanas, recomendado) o navegador [pdf]'
   if ($modo -ne 'navegador') { $modo = 'pdf' }
   $mkey = Read-Host '  Monitor: anon key de Supabase (Enter = sin monitor)'
@@ -105,6 +106,7 @@ IMPRESION_AJUSTE=fit
 MAX_LLAMADAS=0
 SOLO_LLAMADAS=
 ROBOT_PC=$pc
+ROBOT_CENTRO=$mcentro
 MONITOR_SUPABASE_URL=https://kkzovradqpptmsaakqlb.supabase.co
 MONITOR_SUPABASE_KEY=$mkey
 MONITOR_TOKEN=$mtoken
