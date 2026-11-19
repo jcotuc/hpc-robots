@@ -45,7 +45,8 @@ const SOLO_LISTAR = process.argv.includes('--solo-listar')
 const PROBAR_VISOR = process.argv.includes('--probar-visor')
 // Prueba: imprime SOLO la guía de una llamada (cualquier status), sin cambiar status ni Aceptar
 const PROBAR_GUIA = process.argv.includes('--probar-guia')
-const LLAMADA_PRUEBA = (process.argv.find((a) => /^LLS\d+-\d+$/i.test(a)) || '').toUpperCase()
+// Acepta el número aunque venga con espacios, comillas o en minúsculas
+const LLAMADA_PRUEBA = ((process.argv.slice(2).join(' ').match(/LL[A-Z]?\s*\d+\s*-\s*\d+/i) || [''])[0]).replace(/\s+/g, '').toUpperCase()
 const LENTO = process.argv.includes('--lento')
 // Modo PDF: navegador oculto salvo con --lento o --visible (pruebas a mano)
 const VISIBLE = LENTO || process.argv.includes('--visible')
@@ -412,8 +413,16 @@ async function probarVisorPdf(page, numero) {
 /** Prueba: busca una llamada en cualquier status, pide su guía y la imprime. No cambia status ni presiona Aceptar */
 async function probarGuia(page, impresoras) {
   if (!MODO_PDF) throw new Error('probar-guia solo funciona con MODO_IMPRESION=pdf en el .env')
-  if (!LLAMADA_PRUEBA) throw new Error('Falta el número. Uso:  npm.cmd run probar-guia -- LLS21-123456')
-  console.log(`🔎 Prueba: solo la guía de ${LLAMADA_PRUEBA} (no cambia status ni presiona Aceptar)`)
+  let numero = LLAMADA_PRUEBA
+  if (!numero) {
+    // Si no llegó en el comando, se pregunta
+    const { createInterface } = await import('node:readline/promises')
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    numero = ((await rl.question('Número de llamada (ej. LLS21-123456): ')).match(/LL[A-Z]?\s*\d+\s*-\s*\d+/i) || [''])[0].replace(/\s+/g, '').toUpperCase()
+    rl.close()
+  }
+  if (!numero) throw new Error(`No reconocí un número de llamada. Recibí: "${process.argv.slice(2).join(' ')}"`)
+  console.log(`🔎 Prueba: solo la guía de ${numero} (no cambia status ni presiona Aceptar)`)
   await page.goto(`${BASE}/LLamadasServ.aspx`, { waitUntil: 'domcontentloaded' })
   await esperarCSHP(page)
   await elegirFiltro(page, '#FrmLLamadasServ_CmbFCentro', CENTRO, 'CSHP_CENTRO')
@@ -424,17 +433,17 @@ async function probarGuia(page, impresoras) {
   await combo.selectOption(todos.v)
   await esperarCSHP(page)
   console.log(`   ↳ Status: ${todos.t || '(vacío)'}`)
-  await page.locator('#FrmLLamadasServ_TxtFLlamada').fill(LLAMADA_PRUEBA)
+  await page.locator('#FrmLLamadasServ_TxtFLlamada').fill(numero)
   await clic(page, '#FrmLLamadasServ_CmdBuscar')
   await esperarCSHP(page)
-  const link = page.getByRole('link', { name: LLAMADA_PRUEBA, exact: true }).first()
-  if (!(await link.count())) throw new Error(`${LLAMADA_PRUEBA} no aparece en ${CENTRO}. Revisa el número`)
+  const link = page.getByRole('link', { name: numero, exact: true }).first()
+  if (!(await link.count())) throw new Error(`${numero} no aparece en ${CENTRO}. Revisa el número`)
   await link.click()
   await esperarCSHP(page)
   await page.locator('#FrmLLamadasServ_CmdGuiaEnvio').waitFor({ state: 'visible', timeout: 15_000 })
     .catch(() => { throw new Error('La llamada abrió pero no tiene el botón Guía de envío') })
   const g = await obtenerPdf(page, '#FrmLLamadasServ_CmdGuiaEnvio', 'guía')
-  const archivo = await imprimirArchivo(g, LLAMADA_PRUEBA, 'guia', impresoras.guia)
+  const archivo = await imprimirArchivo(g, numero, 'guia', impresoras.guia)
   console.log(`   🖨️  Guía → ${impresoras.guia} · página ${tamanoPdf(g.buffer)} · guardada en ${archivo}`)
   console.log(`   Para probar otro ajuste:  npm.cmd run reimprimir -- guia ${archivo.replace(/\//g, '\\')} noscale`)
 }
