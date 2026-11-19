@@ -500,10 +500,11 @@ function renderNiveles() {
 
 function layout() {
   const todas = allKeys();
-  // Digitadores con muchos centros: cuarto ANCHO abajo, del ancho de todo el mapa, con un escritorio por centro
-  const kAncho = todas.find(k => esGrupo(k) && subKeys(k, true).length > 4) || null;
-  const nAncho = kAncho ? subKeys(kAncho, true).length : 0;
-  const keys = todas.filter(k => k !== kAncho);
+  // Cuartos ANCHOS abajo, del ancho de todo el mapa: Guías con 2+ centros (un puesto por centro) y
+  // Digitadores con muchos centros (un escritorio por centro). Guías va primero (arriba de Digitadores)
+  const anchos = todas.filter(k => esGrupo(k) && (k.startsWith('guias|') ? subKeys(k, true).length > 1 : subKeys(k, true).length > 4))
+    .sort((a, b) => b.startsWith('guias|') - a.startsWith('guias|'));
+  const keys = todas.filter(k => !anchos.includes(k));
   const box = document.getElementById('mapaBox'), n = keys.length;
   const cw = (box.clientWidth || 800) - 4;
   const ch = pantallaCompleta.matches ? (box.clientHeight || 600) - 4 : Infinity;   // celular: solo el ancho manda
@@ -511,9 +512,13 @@ function layout() {
     const c0 = Math.min(...celdas.map(x => x.c)), r0 = Math.min(...celdas.map(x => x.r));
     const cs = Math.max(...celdas.map(x => x.c)) - c0 + 1, rs = Math.max(...celdas.map(x => x.r)) - r0 + 1;
     const w = 2 * M + cs * RW + (cs - 1) * G;
-    let h = 2 * M + rs * RH + (rs - 1) * G, wA = 0, hA = 0;
-    if (kAncho) { wA = cs * RW + (cs - 1) * G; const porFila = Math.max(1, Math.floor((wA - 8) / 90)); hA = Math.max(RH, 34 + Math.ceil(nAncho / porFila) * 78); h += hA + G; }
-    return { celdas: celdas.map(x => ({ ...x, c: x.c - c0, r: x.r - r0 })), cols: cs, rows: rs, w, h, wA, hA, esc: Math.min(cw / w, ch / h) };
+    let h = 2 * M + rs * RH + (rs - 1) * G;
+    const wA = cs * RW + (cs - 1) * G, hAs = anchos.map(k => {
+      if (k.startsWith('guias|')) return RH + 16;   // logística: un puesto amplio por centro
+      const porFila = Math.max(1, Math.floor((wA - 8) / 90)); return Math.max(RH, 34 + Math.ceil(subKeys(k, true).length / porFila) * 78);
+    });
+    hAs.forEach(hA => { h += hA + G; });
+    return { celdas: celdas.map(x => ({ ...x, c: x.c - c0, r: x.r - r0 })), cols: cs, rows: rs, w, h, wA, hAs, esc: Math.min(cw / w, ch / h) };
   };
   const opciones = [];
   const jk = keys.find(k => k.startsWith('jefe|')), otros = keys.filter(k => k !== jk).sort((a, b) => (a === KEY_CAFE) - (b === KEY_CAFE));
@@ -534,13 +539,17 @@ function layout() {
   cv.width = Math.round(MW * S); cv.height = Math.round(MH * S);
   const viejos = new Map(cuartos); cuartos.clear();
   mejor.celdas.forEach(({ k, c, r }) => cuartos.set(k, { k, x: M + c * (RW + G), y: M + r * (RH + G), c, r, fase: viejos.get(k)?.fase ?? Math.random() * 8000 }));
-  if (kAncho) {
-    // la puerta de arriba da al cuarto de la última fila más cercano al centro
+  if (anchos.length) {
+    // la puerta de arriba da al cuarto de la última fila más cercano al centro; los anchos se apilan con la misma puerta
     const ult = [...cuartos.values()].filter(q => q.r === mejor.rows - 1).map(q => q.c);
     const dc = ult.sort((a, b) => Math.abs(a - (mejor.cols - 1) / 2) - Math.abs(b - (mejor.cols - 1) / 2))[0] ?? 0;
-    cuartos.set(kAncho, { k: kAncho, x: M, y: M + mejor.rows * (RH + G), c: dc, r: mejor.rows, w: mejor.wA, h: mejor.hA, puertaX: dc * (RW + G) + RW / 2, fase: viejos.get(kAncho)?.fase ?? Math.random() * 8000 });
+    let y = M + mejor.rows * (RH + G);
+    anchos.forEach((k, i) => {
+      cuartos.set(k, { k, x: M, y, c: dc, r: mejor.rows + i, w: mejor.wA, h: mejor.hAs[i], puertaX: dc * (RW + G) + RW / 2, fase: viejos.get(k)?.fase ?? Math.random() * 8000 });
+      y += mejor.hAs[i] + G;
+    });
   }
-  construirFondo(n, mejor.rows + (kAncho ? 1 : 0));
+  construirFondo(n, mejor.rows + anchos.length);
   renderCards();
 }
 let ultimaFirma = '';
@@ -611,7 +620,7 @@ function construirFondo(n, rows) {
     const der = [...cuartos.values()].find(o => o.r === q.r && o.c === q.c + 1);
     if (der) pasillo(q.x + RW, q.y + 76, G, 16, true);
     const abajo = [...cuartos.values()].find(o => o.c === q.c && o.r === q.r + 1);
-    if (abajo) pasillo(q.x + RW / 2 - 9, q.y + RH, 18, G, false);
+    if (abajo) pasillo(cxDe(q) - 9, q.y + (q.h || RH), 18, G, false);
   });
   // entrada del dungeon (escalera) arriba a la izquierda
   if (VISTA === 'dungeon') { p(4, 4, 10, 10, '#2b2433'); for (let i = 0; i < 4; i++) p(5, 5 + i * 2.5, 8 - i * 2, 2, '#3a3046'); }
@@ -920,9 +929,11 @@ function salaLogistica(q, s, est, t, col) {
    Cada puesto: letrero del centro, su robot (escritorio → GUIA → DIAG), OK de hoy y lo que tiene en 106 por imprimir */
 function salaLogisticaGrupo(q, est, t, col) {
   const m = meta('guias'), subs = subKeys(q.k, true);
-  const n = subs.length, cw = (RW - 8) / n, compacto = cw < 80;   // 3+ centros: una sola impresora por puesto
+  // en el cuarto ancho cada puesto mide hasta 200 y el grupo va centrado; en un cuarto normal se reparten los 184
+  const n = subs.length, cw = Math.min(200, (RW - 8) / n), compacto = cw < 80;   // muy angosto: una sola impresora por puesto
+  const ini = Math.round((RW - cw * n) / 2);
   subs.forEach((x, i) => {
-    const x0 = Math.round(4 + cw * i), cx = Math.round(x0 + cw / 2), st = status.get(x), e = estadoVista(x);
+    const x0 = Math.round(ini + cw * i), cx = Math.round(x0 + cw / 2), st = status.get(x), e = estadoVista(x);
     const dimP = ['caido', 'sindatos', 'durmiendo'].includes(e);
     const centro = st?.centro || m.centro || 'SIN CENTRO';
     const ok = resumen.get(x)?.ok_hoy || 0, err = resumen.get(x)?.errores_hoy || 0;
@@ -932,7 +943,15 @@ function salaLogisticaGrupo(q, est, t, col) {
     // izquierda: escritorio con compu · derecha: impresoras GUIA y DIAG
     const D = x0 + 4, PCx = x0 + 14;
     escritorio(D, 66, 22); compu(D + 3, 50, e, t, e === 'trabajando' || e === 'error');
-    const A = compacto ? x0 + Math.round(cw) - 28 : x0 + Math.round(cw) - 52, B = x0 + Math.round(cw) - 28;
+    // puesto amplio (cuarto ancho): impresoras al centro y mesa de embalaje con las cajas del día a la derecha
+    const amplio = cw >= 150;
+    const A = compacto ? x0 + Math.round(cw) - 28 : amplio ? x0 + 52 : x0 + Math.round(cw) - 52, B = amplio ? x0 + 80 : x0 + Math.round(cw) - 28;
+    if (amplio) {
+      const mx = x0 + Math.round(cw) - 62;
+      px(mx, 70, 50, 4, T.mesa); px(mx, 70, 50, 1, T.mesaLuz); px(mx + 2, 74, 3, 14, T.pata); px(mx + 45, 74, 3, 14, T.pata);
+      for (let k = 0; k < Math.min(8, ok); k++) { const bx = mx + 3 + (k % 4) * 11, by = 62 - Math.floor(k / 4) * 8; px(bx, by, 10, 8, '#b45309'); px(bx, by, 10, 1, '#d97706'); px(bx + 4, by, 2, 8, '#fde68a'); }
+      texto('EMBALAJE', mx + 25, 98, 3, '#6b6475', true);
+    }
     // ciclo: teclea → imprime guía → imprime diagnóstico → vuelve
     const fase = ((t + i * 2300) % 6000) / 6000;
     const accion = e !== 'trabajando' ? 'quieto' : fase < .3 ? 'teclea' : fase < .4 ? 'aA' : fase < .6 ? 'imprimirA' : fase < .7 ? 'aB' : fase < .9 ? 'imprimirB' : 'vuelve';
