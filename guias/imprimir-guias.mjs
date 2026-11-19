@@ -356,6 +356,12 @@ async function obtenerPdf(page, selector, que, evitar = null, timeout = 40_000) 
     : `CSHP no entregó el PDF de la ${que} en ${timeout / 1000} s`)
 }
 
+/** Tamaño de la primera página del PDF en pulgadas, ej. "4.00x6.00" (para ajustar la impresión) */
+function tamanoPdf(buf) {
+  const m = buf.toString('latin1').match(/MediaBox\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)/)
+  return m ? `${((m[3] - m[1]) / 72).toFixed(2)}x${((m[4] - m[2]) / 72).toFixed(2)}in` : '?'
+}
+
 async function imprimirArchivo(pdf, numero, doc, impresora) {
   mkdirSync('pdfs', { recursive: true })
   const archivo = `pdfs/${numero}-${doc}.pdf`
@@ -374,13 +380,13 @@ async function procesarPdf(page, numero, impresoras) {
 
   const g = await obtenerPdf(page, '#FrmLLamadasServ_CmdGuiaEnvio', 'guía')
   await imprimirArchivo(g, numero, 'guia', impresoras.guia)
-  anotar(numero, 'guia', { impresora: impresoras.guia, visor: g.url, pdf: g.hash.slice(0, 10) })
+  anotar(numero, 'guia', { impresora: impresoras.guia, visor: g.url, pdf: g.hash.slice(0, 10), tamano: tamanoPdf(g.buffer) })
   console.log(`   🖨️  Guía → ${impresoras.guia}`)
 
   await esperarCSHP(page)
   const d = await obtenerPdf(page, '#FrmLLamadasServ_CmdDiagnostico', 'diagnóstico', g.hash)
   await imprimirArchivo(d, numero, 'diagnostico', impresoras.diagnostico)
-  anotar(numero, 'diagnostico', { impresora: impresoras.diagnostico, visor: d.url, pdf: d.hash.slice(0, 10) })
+  anotar(numero, 'diagnostico', { impresora: impresoras.diagnostico, visor: d.url, pdf: d.hash.slice(0, 10), tamano: tamanoPdf(d.buffer) })
   console.log(`   🖨️  Diagnóstico → ${impresoras.diagnostico}`)
 
   await clic(page, '#FrmLLamadasServ_CmdAceptar')
@@ -396,7 +402,7 @@ async function probarVisorPdf(page, numero) {
   const d = await obtenerPdf(page, '#FrmLLamadasServ_CmdDiagnostico', 'diagnóstico')
   mkdirSync('capturas', { recursive: true })
   writeFileSync('capturas/prueba-diagnostico.pdf', d.buffer)
-  console.log(`   ✅ CSHP entregó el PDF (${Math.round(d.buffer.length / 1024)} KB): ${d.url}`)
+  console.log(`   ✅ CSHP entregó el PDF (${Math.round(d.buffer.length / 1024)} KB, página ${tamanoPdf(d.buffer)}): ${d.url}`)
   console.log('   Ábrelo para revisarlo:  start capturas\\prueba-diagnostico.pdf')
 }
 

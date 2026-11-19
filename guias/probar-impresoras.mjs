@@ -7,7 +7,7 @@
  */
 import { chromium } from 'playwright'
 import { impresorasDelEnv, impresoraPredeterminada, usarImpresora, MODO_PDF, imprimirPdf, rutaSumatra } from './impresoras.mjs'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, statSync } from 'node:fs'
 
 // Modo PDF: crea una hoja de prueba en PDF por impresora y la manda con SumatraPDF (sin navegador visible)
 if (MODO_PDF) {
@@ -20,10 +20,18 @@ if (MODO_PDF) {
     for (const [doc, nombre] of Object.entries(imp)) {
       const titulo = doc === 'guia' ? 'GUÍA' : 'DIAGNÓSTICO'
       await p.setContent(`<h1 style="font:40px sans-serif">PRUEBA ${titulo}</h1><p style="font:22px sans-serif">Esta hoja debe salir en:<br><b>${nombre}</b></p>`)
-      const archivo = `pdfs/prueba-${doc}.pdf`
-      await p.pdf({ path: archivo, format: 'Letter' })
-      await imprimirPdf(archivo, nombre)
-      console.log(`🖨️  "${titulo}" → ${nombre}`)
+      // Si ya hay un PDF REAL de CSHP de este documento (pdfs\\LLS...-guia.pdf), se usa ese: la hoja
+      // de prueba es tamaño carta y en la etiqueta sale pequeña aunque el real salga bien
+      const reales = readdirSync('pdfs').filter((f) => f.startsWith('LLS') && f.endsWith(`-${doc}.pdf`))
+        .map((f) => ({ f: `pdfs/${f}`, t: statSync(`pdfs/${f}`).mtimeMs })).sort((x, y) => y.t - x.t)
+      let archivo = reales[0]?.f
+      if (!archivo) {
+        archivo = `pdfs/prueba-${doc}.pdf`
+        await p.pdf({ path: archivo, format: 'Letter' })
+      }
+      const ajuste = (process.env[doc === 'guia' ? 'IMPRESION_AJUSTE_GUIA' : 'IMPRESION_AJUSTE_DIAGNOSTICO'] || process.env.IMPRESION_AJUSTE || 'fit').trim()
+      await imprimirPdf(archivo, nombre, ajuste)
+      console.log(`🖨️  "${titulo}" → ${nombre} · ${reales[0] ? `PDF real ${archivo}` : 'hoja de prueba (tamaño carta)'} · ajuste ${ajuste}`)
     }
   } finally { await b.close() }
   console.log('\nRevisa: cada hoja dice en qué impresora debía salir. Si una salió mal o cortada, avisa.\n')
