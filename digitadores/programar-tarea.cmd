@@ -11,7 +11,8 @@ if "%MIN%"=="" set MIN=3
 if "%INI%"=="" set INI=06:00
 if "%FIN%"=="" set FIN=22:00
 for /f %%d in ('powershell -NoProfile -Command "$d=[datetime]'%FIN%'-[datetime]'%INI%'; '{0:00}:{1:00}' -f [int][math]::Floor($d.TotalHours),$d.Minutes"') do set DU=%%d
-schtasks /Create /TN "HPC Digitadores CSHP" /TR "\"%~dp0correr.cmd\"" /SC WEEKLY /D MON,TUE,WED,THU,FRI,SAT /ST %INI% /RI %MIN% /DU %DU% /F
+rem Sin ventana negra: wscript abre correr.cmd oculto (correr-oculto.vbs)
+schtasks /Create /TN "HPC Digitadores CSHP" /TR "wscript.exe //B //Nologo \"%~dp0correr-oculto.vbs\"" /SC WEEKLY /D MON,TUE,WED,THU,FRI,SAT /ST %INI% /RI %MIN% /DU %DU% /F
 if not %errorlevel%==0 (echo No se pudo crear la tarea & pause & exit /b 1)
 rem Que corra tambien con bateria, no se detenga al desconectar el cargador y recupere corridas perdidas
 powershell -NoProfile -Command "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30); Set-ScheduledTask -TaskName 'HPC Digitadores CSHP' -Settings $s | Out-Null"

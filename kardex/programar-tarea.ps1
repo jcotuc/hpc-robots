@@ -3,7 +3,9 @@ $ErrorActionPreference = 'Stop'
 $cmd = Join-Path $PSScriptRoot 'correr.cmd'
 $dias = 'Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'
 $triggers = '06:30','12:30','17:30' | ForEach-Object { New-ScheduledTaskTrigger -Weekly -DaysOfWeek $dias -At $_ }
-$accion = New-ScheduledTaskAction -Execute $cmd -WorkingDirectory $PSScriptRoot
+# Sin ventana negra: wscript corre correr.cmd oculto
+$vbs = Join-Path $PSScriptRoot 'correr-oculto.vbs'
+$accion = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //Nologo `"$vbs`"" -WorkingDirectory $PSScriptRoot
 $ajustes = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 50)
 Register-ScheduledTask -TaskName 'HPC Kardex' -Action $accion -Trigger $triggers -Settings $ajustes -Force | Out-Null
 Write-Host 'Tarea "HPC Kardex" creada: L-S 6:30, 12:30 y 17:30.' -ForegroundColor Green

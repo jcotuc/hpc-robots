@@ -92,3 +92,7 @@ Robots manuales en `MANUALES` de `revisar.mjs` (garantias, truper): no se marcan
 3. Confianza por regla (sube/baja con las confirmaciones) y autonomía que se gana: acciones seguras repetidas se aprueban N veces y luego las hace solo; si falla, vuelve a pedir permiso.
 4. Reporte semanal de lo aprendido. Errores no reconocidos se agrupan y se le preguntan a Joshua (una etiqueta = lo reconoce para siempre).
 
+## Estándar: tareas programadas SIN ventana negra
+Toda tarea programada corre `wscript.exe //B //Nologo "<carpeta>\correr-oculto.vbs"` (abre `correr.cmd` oculto y espera a que termine; copiar el .vbs de `jefe\`).
+`correr.cmd` nunca lleva `pause` (oculto se quedaría esperando para siempre). Excepción: robots que se corren a mano con doble clic (garantias) se ven, para leer el resultado.
+Robot nuevo = `correr.cmd` + `correr-oculto.vbs` + `programar-tarea` que use el .vbs. Después de cambiarlo, volver a correr su `programar-tarea` en la PC.

@@ -9,7 +9,9 @@ $cmd = Join-Path $PSScriptRoot 'correr.cmd'
 schtasks /Create /TN $nombre /TR "`"$cmd`"" /SC MONTHLY /D 1 /ST 02:00 /F | Out-Null
 $ajustes = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
   -ExecutionTimeLimit (New-TimeSpan -Hours 6) -MultipleInstances IgnoreNew
-$accion = New-ScheduledTaskAction -Execute $cmd -WorkingDirectory $PSScriptRoot
+# Sin ventana negra: wscript corre correr.cmd oculto
+$vbs = Join-Path $PSScriptRoot 'correr-oculto.vbs'
+$accion = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //Nologo `"$vbs`"" -WorkingDirectory $PSScriptRoot
 Set-ScheduledTask -TaskName $nombre -Settings $ajustes -Action $accion | Out-Null
 
 $t = Get-ScheduledTask -TaskName $nombre
