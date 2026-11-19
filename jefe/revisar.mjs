@@ -317,10 +317,16 @@ async function revisarCarga() {
   await intenta('guias', async () => {
     if (minEnHorario('guias') === null) return { n: null, detalle: 'Fuera de horario: no se revisó CSHP' }
     if (cshpCaido) return { n: null, detalle: 'CSHP no responde: no se pudo revisar' }
-    // Un centro por cada PC de guías (GUIAS_CENTRO=HPCS016,HPCS015 → Zona 6 y Morales)
-    const centros = String(E.GUIAS_CENTRO || 'HPCS016,HPCS015').split(',').map((c) => c.trim()).filter(Boolean)
+    // Un centro por cada PC de guías: CÓDIGO CSHP=centro del dungeon (el ROBOT_CENTRO de esa PC)
+    // GUIAS_CENTRO=HPCS016=Nodus,HPCS015=Morales   → además del total, guias@Nodus y guias@Morales (un cuarto por PC)
+    const centros = String(E.GUIAS_CENTRO || 'HPCS016=Nodus,HPCS015=Morales').split(',').map((c) => c.trim()).filter(Boolean)
+      .map((c) => { const [cod, nom] = c.split('='); return [cod.trim(), (nom || cod).trim()] })
     const cshp = await sesionCSHP(), porCentro = []
-    for (const c of centros) porCentro.push([c, await pendientesGuias(cshp, { centro: c, status: E.GUIAS_STATUS || '106' })])
+    for (const [cod, nom] of centros) {
+      const l = await pendientesGuias(cshp, { centro: cod, status: E.GUIAS_STATUS || '106' })
+      porCentro.push([nom, l])
+      CARGA[`guias@${nom}`] = { n: l.length, detalle: l.length ? `${l.length} LLS en 106 por imprimir (${nom}): ${l.slice(0, 5).join(', ')}` : `Sin LLS en 106 por imprimir (${nom})` }
+    }
     const n = porCentro.reduce((a, [, l]) => a + l.length, 0)
     return { n, detalle: n ? `${n} LLS en 106 por imprimir · ${porCentro.map(([c, l]) => `${c}: ${l.length}`).join(' · ')}` : 'Sin LLS en 106 por imprimir' }
   })
