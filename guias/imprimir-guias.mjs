@@ -18,7 +18,7 @@
  *       correr.cmd           lo usa la tarea programada (ambiente según AMBIENTE del .env)
  */
 import { chromium } from 'playwright'
-import { mkdirSync, openSync, writeSync, closeSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, statSync, existsSync } from 'node:fs'
+import { mkdirSync, openSync, writeSync, closeSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, statSync, existsSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { impresorasDelEnv, impresoraPredeterminada, usarImpresora, MODO_PDF, rutaSumatra, imprimirPdf, recortarAlto, altoEtiqueta } from './impresoras.mjs'
 import { crearMonitor } from '../shared/monitor.mjs'
@@ -511,6 +511,25 @@ async function probarVisor(page, diag, numero) {
   console.log('   Puedes correr:  npm.cmd run qa')
 }
 
+// ─── Limpieza: borra PDF y capturas viejas para no llenar el disco ───────────
+// PDFS_DIAS (7 por defecto) y CAPTURAS_DIAS (30). 0 = no borrar nunca.
+function limpiarViejos(carpeta, dias) {
+  if (!(dias > 0) || !existsSync(carpeta)) return 0
+  const limite = Date.now() - dias * 24 * 60 * 60_000
+  let n = 0
+  for (const f of readdirSync(carpeta)) {
+    const ruta = `${carpeta}/${f}`
+    try { if (statSync(ruta).isFile() && statSync(ruta).mtimeMs < limite) { unlinkSync(ruta); n++ } } catch { /* en uso: la próxima vez */ }
+  }
+  return n
+}
+function limpieza() {
+  const dias = (v, d) => (v !== undefined && v.trim() !== '' ? Number(v) : d)
+  const p = limpiarViejos('pdfs', dias(process.env.PDFS_DIAS, 7))
+  const c = limpiarViejos('capturas', dias(process.env.CAPTURAS_DIAS, 30))
+  if (p || c) console.log(`🧹 Limpieza: ${p} PDF y ${c} captura(s) viejas borradas`)
+}
+
 // ─── Candado: una sola corrida a la vez ──────────────────────────────────────
 const CANDADO = '.sync.lock'
 function tomarCandado() {
@@ -543,6 +562,7 @@ async function main() {
     if (!SOLO_LISTAR && !PROBAR_VISOR && !PROBAR_GUIA) resumen('OMITIDA corrida: la anterior sigue trabajando')
     return
   }
+  if (!SOLO_LISTAR && !PROBAR_VISOR && !PROBAR_GUIA) limpieza()
 
   mon.trabajando(null, 'Buscando llamadas')
   const revisar = Object.keys(registro).filter(pendienteRevision)

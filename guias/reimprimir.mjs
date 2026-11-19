@@ -5,12 +5,17 @@
  *   npm.cmd run reimprimir -- diagnostico C:\ruta\archivo.pdf
  *   npm.cmd run reimprimir -- guia C:\ruta\archivo.pdf noscale     (probar otro ajuste: fit | shrink | noscale)
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { impresorasDelEnv, imprimirPdf, recortarAlto, altoEtiqueta, tamanoPdfIn } from './impresoras.mjs'
 
 const [doc = '', archivo = '', ajusteArg = ''] = process.argv.slice(2)
 const tipo = /^g/i.test(doc) ? 'guia' : /^d/i.test(doc) ? 'diagnostico' : ''
 if (!tipo || !archivo || !existsSync(archivo)) {
+  if (archivo && !existsSync(archivo)) {
+    console.error(`No existe el archivo: ${archivo}`)
+    const hay = existsSync('pdfs') ? readdirSync('pdfs').filter((f) => f.endsWith('.pdf') && !f.endsWith('-etiqueta.pdf')) : []
+    if (hay.length) { console.error('PDF disponibles en pdfs\\:'); hay.forEach((f) => console.error(`   pdfs\\${f}`)) }
+  }
   console.error('Uso:  npm.cmd run reimprimir -- guia|diagnostico C:\\ruta\\archivo.pdf [fit|shrink|noscale]')
   process.exit(1)
 }
