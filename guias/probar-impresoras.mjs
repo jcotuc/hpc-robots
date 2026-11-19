@@ -6,7 +6,29 @@
  * Uso:  npm.cmd run probar-impresoras
  */
 import { chromium } from 'playwright'
-import { impresorasDelEnv, impresoraPredeterminada, usarImpresora } from './impresoras.mjs'
+import { impresorasDelEnv, impresoraPredeterminada, usarImpresora, MODO_PDF, imprimirPdf, rutaSumatra } from './impresoras.mjs'
+import { mkdirSync } from 'node:fs'
+
+// Modo PDF: crea una hoja de prueba en PDF por impresora y la manda con SumatraPDF (sin navegador visible)
+if (MODO_PDF) {
+  const imp = impresorasDelEnv()
+  console.log(`\nModo PDF · SumatraPDF: ${rutaSumatra()} · ajuste: ${process.env.IMPRESION_AJUSTE || 'fit'}\n`)
+  mkdirSync('pdfs', { recursive: true })
+  const b = await chromium.launch()
+  const p = await b.newPage()
+  try {
+    for (const [doc, nombre] of Object.entries(imp)) {
+      const titulo = doc === 'guia' ? 'GUÍA' : 'DIAGNÓSTICO'
+      await p.setContent(`<h1 style="font:40px sans-serif">PRUEBA ${titulo}</h1><p style="font:22px sans-serif">Esta hoja debe salir en:<br><b>${nombre}</b></p>`)
+      const archivo = `pdfs/prueba-${doc}.pdf`
+      await p.pdf({ path: archivo, format: 'Letter' })
+      await imprimirPdf(archivo, nombre)
+      console.log(`🖨️  "${titulo}" → ${nombre}`)
+    }
+  } finally { await b.close() }
+  console.log('\nRevisa: cada hoja dice en qué impresora debía salir. Si una salió mal o cortada, avisa.\n')
+  process.exit(0)
+}
 
 const impresoras = impresorasDelEnv()
 const original = impresoraPredeterminada()

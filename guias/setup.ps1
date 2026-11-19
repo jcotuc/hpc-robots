@@ -19,6 +19,27 @@ npx.cmd playwright install chromium
 if ($LASTEXITCODE -ne 0) { Write-Host 'Fallo la instalacion de Chromium' -ForegroundColor Red; exit 1 }
 Write-Host '[2/4] Dependencias OK' -ForegroundColor Green
 
+# 2b. SumatraPDF portable (modo PDF: imprime sin navegador visible). No necesita administrador.
+$exe = Join-Path $PSScriptRoot 'bin\SumatraPDF.exe'
+if (-not (Test-Path $exe)) {
+  Write-Host '[2/4] Descargando SumatraPDF portable...'
+  New-Item -ItemType Directory -Force (Join-Path $PSScriptRoot 'bin') | Out-Null
+  $zip = Join-Path $env:TEMP 'sumatrapdf.zip'
+  $urls = @('https://www.sumatrapdfreader.org/dl/rel/3.5.2/SumatraPDF-3.5.2-64.zip',
+            'https://files2.sumatrapdfreader.org/software/sumatrapdf/rel/3.5.2/SumatraPDF-3.5.2-64.zip')
+  foreach ($u in $urls) {
+    try {
+      Invoke-WebRequest $u -OutFile $zip -UseBasicParsing
+      Expand-Archive $zip -DestinationPath (Join-Path $PSScriptRoot 'bin') -Force
+      $f = Get-ChildItem (Join-Path $PSScriptRoot 'bin') -Filter 'SumatraPDF*.exe' | Select-Object -First 1
+      if ($f -and $f.Name -ne 'SumatraPDF.exe') { Rename-Item $f.FullName 'SumatraPDF.exe' }
+      if (Test-Path $exe) { break }
+    } catch { }
+  }
+  if (Test-Path $exe) { Write-Host '[2/4] SumatraPDF OK' -ForegroundColor Green }
+  else { Write-Host '[2/4] No se pudo descargar SumatraPDF. Descarga la version portable 64-bit de sumatrapdfreader.org y guardala como bin\SumatraPDF.exe' -ForegroundColor Yellow }
+} else { Write-Host '[2/4] SumatraPDF OK' -ForegroundColor Green }
+
 # 3. Que Windows NO cambie solo la impresora predeterminada (el robot la cambia por documento)
 Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Windows' -Name LegacyDefaultPrinterMode -Value 1 -Type DWord
 Write-Host '[3/4] "Windows administra mi impresora predeterminada" desactivado' -ForegroundColor Green
@@ -50,6 +71,14 @@ if ($crear) {
   if ($amb -ne 'prod') { $amb = 'qa' }
   $usuario = Read-Host '  Usuario CSHP'
   $pass = Leer-Secreto '  Contrasena CSHP'
+  $centro = Read-Host '  Centro de servicio en CSHP: codigo o nombre, ej. HPCS016 o Morales [HPCS016]'
+  if (-not $centro) { $centro = 'HPCS016' }
+  $pc = Read-Host '  Nombre de esta PC para el monitor, ej. Guias Morales'
+  $modo = Read-Host '  Modo de impresion: pdf (sin ventanas, recomendado) o navegador [pdf]'
+  if ($modo -ne 'navegador') { $modo = 'pdf' }
+  $mkey = Read-Host '  Monitor: anon key de Supabase (Enter = sin monitor)'
+  $mtoken = ''
+  if ($mkey) { $mtoken = Read-Host '  Monitor: token de esta PC (nuevo-token-robot.ps1)' }
 
   $impresoras = @(Get-CimInstance Win32_Printer | ForEach-Object { $_.Name })
   Write-Host ''
@@ -64,15 +93,21 @@ CSHP_QA_URL=https://tallerqa.hpc.com.gt/CSHP
 CSHP_PROD_URL=https://taller.hpc.com.gt/CSHP
 CSHP_USUARIO=$usuario
 CSHP_PASSWORD='$pass'
-CSHP_CENTRO=HPCS016
+CSHP_CENTRO=$centro
 CSHP_ESTADO_BUSCAR=106
 CSHP_FILTRO_LLAMADA=LLS
 CSHP_ESTADO_NUEVO=
 IMPRESORA_GUIA=$guia
 IMPRESORA_DIAGNOSTICO=$diag
 ESPERA_IMPRESION_SEG=3
+MODO_IMPRESION=$modo
+IMPRESION_AJUSTE=fit
 MAX_LLAMADAS=0
 SOLO_LLAMADAS=
+ROBOT_PC=$pc
+MONITOR_SUPABASE_URL=https://kkzovradqpptmsaakqlb.supabase.co
+MONITOR_SUPABASE_KEY=$mkey
+MONITOR_TOKEN=$mtoken
 "@
   [IO.File]::WriteAllText((Join-Path $PSScriptRoot '.env'), $contenido, (New-Object Text.UTF8Encoding $false))
   Write-Host "[4/4] .env creado (tarea programada: $amb)" -ForegroundColor Green

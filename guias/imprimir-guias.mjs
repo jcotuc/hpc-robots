@@ -20,7 +20,7 @@
 import { chromium } from 'playwright'
 import { mkdirSync, openSync, writeSync, closeSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, statSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { impresorasDelEnv, impresoraPredeterminada, usarImpresora } from './impresoras.mjs'
+import { impresorasDelEnv, impresoraPredeterminada, usarImpresora, MODO_PDF, rutaSumatra, imprimirPdf } from './impresoras.mjs'
 import { crearMonitor } from '../shared/monitor.mjs'
 import { salirSiKardex } from '../shared/kardex-pausa.mjs'
 await salirSiKardex('guias')   // pausa mientras Kardex actualiza inventario en esta PC
@@ -44,6 +44,8 @@ const SOLO = String(process.env.SOLO_LLAMADAS || '').split(',').map((x) => x.tri
 const SOLO_LISTAR = process.argv.includes('--solo-listar')
 const PROBAR_VISOR = process.argv.includes('--probar-visor')
 const LENTO = process.argv.includes('--lento')
+// Modo PDF: navegador oculto salvo con --lento o --visible (pruebas a mano)
+const VISIBLE = LENTO || process.argv.includes('--visible')
 const ES_PROD = !/tallerqa/i.test(BASE)
 const PATRON = /^LLS\d+-\d+$/i
 const REGISTRO = 'registro.json'
@@ -281,7 +283,125 @@ async function abrirLlamada(page, numero) {
   await page.locator('#FrmLLamadasServ_CmdCambiarStatus').waitFor({ state: 'visible', timeout: 15_000 })
 }
 
+// ─── Modo PDF ─────────────────────────────────────────────────────────────────
+// Escucha los PDF que CSHP entrega (respuesta o descarga), sin depender del visor.
+function escucharPdfs(page) {
+  const vistos = []
+  const ctx = page.context()
+  const onResp = (r) => {
+    const ct = (r.headers()['content-type'] || '').toLowerCase()
+    if (ct.includes('pdf') || /\.pdf(\?|$)/i.test(r.url())) vistos.push({ url: r.url(), resp: r })
+  }
+  const onDl = (d) => vistos.push({ url: d.url(), dl: d })
+  ctx.on('response', onResp)
+  page.on('download', onDl)
+  return { vistos, parar: () => { ctx.off('response', onResp); page.off('download', onDl) } }
+}
+
+/** Respaldo: direcciones de iframes/embed/object que podrían ser el PDF (si el navegador oculto no lo pidió) */
+async function candidatosDom(page) {
+  const urls = new Set()
+  for (const f of page.frames()) {
+    if (f.isDetached()) continue
+    const u = f.url()
+    if (/^https?:/i.test(u) && f !== page.mainFrame()) urls.add(u)
+    const srcs = await f.evaluate(() => [...document.querySelectorAll('iframe[src], embed[src], object[data]')]
+      .map((e) => { try { return new URL(e.getAttribute('src') || e.getAttribute('data'), location.href).href } catch { return '' } }))
+      .catch(() => [])
+    srcs.filter((x) => /^https?:/i.test(x)).forEach((x) => urls.add(x))
+  }
+  return [...urls]
+}
+
+const esPdf = (b) => Boolean(b && b.length > 100 && b.subarray(0, 1024).toString('latin1').includes('%PDF'))
+
+async function bytesPdf(page, v) {
+  if (v.dl) { const ruta = await v.dl.path().catch(() => null); if (ruta) { const b = readFileSync(ruta); if (esPdf(b)) return b } }
+  if (v.resp) { const b = await v.resp.body().catch(() => null); if (esPdf(b)) return b }
+  if (/^https?:/i.test(v.url)) {
+    const r = await page.context().request.get(v.url, { timeout: 20_000 }).catch(() => null)
+    if (r && r.ok()) { const b = await r.body().catch(() => null); if (esPdf(b)) return b }
+  }
+  return null
+}
+
+/** Clic en el botón y espera el PDF que genera. evitar = huella del PDF anterior (la guía) */
+async function obtenerPdf(page, selector, que, evitar = null, timeout = 40_000) {
+  const esc = escucharPdfs(page)
+  try {
+    await clic(page, selector)
+    const limite = Date.now() + timeout
+    let i = 0
+    const probadas = new Set()
+    let proxDom = Date.now() + 5_000
+    while (Date.now() < limite) {
+      // Si en 5 s no llegó ningún PDF por la red, buscar su dirección en la página
+      if (Date.now() >= proxDom) {
+        proxDom = Date.now() + 3_000
+        for (const u of await candidatosDom(page)) if (!probadas.has(u)) { probadas.add(u); esc.vistos.push({ url: u }) }
+      }
+      while (i < esc.vistos.length) {
+        const v = esc.vistos[i++]
+        const b = await bytesPdf(page, v)
+        if (!b) continue
+        const hash = createHash('sha1').update(b).digest('hex')
+        if (evitar && hash === evitar) continue // es el PDF de la guía otra vez
+        return { url: v.url, buffer: b, hash }
+      }
+      await page.waitForTimeout(300)
+    }
+  } finally { esc.parar() }
+  throw new Error(evitar
+    ? `No llegó el PDF del ${que} (solo el de la guía). No se imprimió para no duplicar la guía`
+    : `CSHP no entregó el PDF de la ${que} en ${timeout / 1000} s`)
+}
+
+async function imprimirArchivo(pdf, numero, doc, impresora) {
+  mkdirSync('pdfs', { recursive: true })
+  const archivo = `pdfs/${numero}-${doc}.pdf`
+  writeFileSync(archivo, pdf.buffer)
+  // Ajuste por documento si hace falta (ej. etiqueta de la TSC): IMPRESION_AJUSTE_GUIA / IMPRESION_AJUSTE_DIAGNOSTICO
+  const ajuste = (process.env[doc === 'guia' ? 'IMPRESION_AJUSTE_GUIA' : 'IMPRESION_AJUSTE_DIAGNOSTICO'] || process.env.IMPRESION_AJUSTE || 'fit').trim()
+  await imprimirPdf(archivo, impresora, ajuste)
+  return archivo
+}
+
+async function procesarPdf(page, numero, impresoras) {
+  await abrirLlamada(page, numero)
+  anotar(numero, 'abrir')
+
+  await cambiarStatus(page, numero)
+
+  const g = await obtenerPdf(page, '#FrmLLamadasServ_CmdGuiaEnvio', 'guía')
+  await imprimirArchivo(g, numero, 'guia', impresoras.guia)
+  anotar(numero, 'guia', { impresora: impresoras.guia, visor: g.url, pdf: g.hash.slice(0, 10) })
+  console.log(`   🖨️  Guía → ${impresoras.guia}`)
+
+  await esperarCSHP(page)
+  const d = await obtenerPdf(page, '#FrmLLamadasServ_CmdDiagnostico', 'diagnóstico', g.hash)
+  await imprimirArchivo(d, numero, 'diagnostico', impresoras.diagnostico)
+  anotar(numero, 'diagnostico', { impresora: impresoras.diagnostico, visor: d.url, pdf: d.hash.slice(0, 10) })
+  console.log(`   🖨️  Diagnóstico → ${impresoras.diagnostico}`)
+
+  await clic(page, '#FrmLLamadasServ_CmdAceptar')
+  await esperarCSHP(page)
+  await page.locator('#FrmLLamadasServ_CmdBuscar').waitFor({ state: 'visible', timeout: 15_000 })
+  anotar(numero, 'aceptar', { estado: 'completa' })
+}
+
+/** Modo PDF: abre una llamada SIN cambiar status, pide el diagnóstico y lo guarda (no imprime) */
+async function probarVisorPdf(page, numero) {
+  console.log(`🔎 Probando PDF del diagnóstico con ${numero} (no cambia status ni imprime)`)
+  await abrirLlamada(page, numero)
+  const d = await obtenerPdf(page, '#FrmLLamadasServ_CmdDiagnostico', 'diagnóstico')
+  mkdirSync('capturas', { recursive: true })
+  writeFileSync('capturas/prueba-diagnostico.pdf', d.buffer)
+  console.log(`   ✅ CSHP entregó el PDF (${Math.round(d.buffer.length / 1024)} KB): ${d.url}`)
+  console.log('   Ábrelo para revisarlo:  start capturas\\prueba-diagnostico.pdf')
+}
+
 async function procesar(page, diag, numero, impresoras) {
+  if (MODO_PDF) return procesarPdf(page, numero, impresoras)
   await abrirLlamada(page, numero)
   anotar(numero, 'abrir')
 
@@ -364,7 +484,7 @@ function tomarCandado() {
 // ─── Principal ───────────────────────────────────────────────────────────────
 async function main() {
   const inicioCorrida = Date.now()
-  console.log(`\n🚀 Guías y diagnósticos · ${ES_PROD ? '⚠️  PRODUCCIÓN' : 'QA'} · ${BASE} · ${CENTRO} / status ${ESTADO_BUSCAR}${SOLO_LISTAR ? ' · SOLO LISTAR' : ''}\n`)
+  console.log(`\n🚀 Guías y diagnósticos · ${MODO_PDF ? 'modo PDF · ' : ''}${ES_PROD ? '⚠️  PRODUCCIÓN' : 'QA'} · ${BASE} · ${CENTRO} / status ${ESTADO_BUSCAR}${SOLO_LISTAR ? ' · SOLO LISTAR' : ''}\n`)
   if (!tomarCandado()) {
     console.log('⏸️  Ya hay otra corrida en proceso en esta PC. Se omite esta.')
     if (!SOLO_LISTAR && !PROBAR_VISOR) resumen('OMITIDA corrida: la anterior sigue trabajando')
@@ -380,7 +500,8 @@ async function main() {
   }
 
   const impresoras = SOLO_LISTAR ? null : impresorasDelEnv()
-  const original = SOLO_LISTAR ? null : impresoraPredeterminada()
+  if (MODO_PDF && !SOLO_LISTAR) rutaSumatra() // falla al inicio si no está SumatraPDF
+  const original = (SOLO_LISTAR || MODO_PDF) ? null : impresoraPredeterminada()
   mkdirSync('capturas', { recursive: true })
 
   // Con --kiosk-printing el diálogo de impresión se confirma solo (necesita navegador visible).
@@ -394,8 +515,16 @@ async function main() {
     p.on('dialog', async (d) => { console.log(`   💬 CSHP: ${d.message()}`); await d.accept().catch(() => {}) })
     return { b, p }
   }
-  const principal = await abrir(impresoras?.guia)
-  const segundo = SOLO_LISTAR ? null : await abrir(impresoras.diagnostico)
+  // Modo PDF: un solo navegador, oculto (headless); imprime SumatraPDF
+  const abrirPdf = async () => {
+    const b = await chromium.launch({ headless: !VISIBLE, slowMo: LENTO ? 250 : 0 })
+    const p = await (await b.newContext({ acceptDownloads: true })).newPage()
+    p.setDefaultTimeout(30_000)
+    p.on('dialog', async (d) => { console.log(`   💬 CSHP: ${d.message()}`); await d.accept().catch(() => {}) })
+    return { b, p }
+  }
+  const principal = MODO_PDF ? await abrirPdf() : await abrir(impresoras?.guia)
+  const segundo = (SOLO_LISTAR || MODO_PDF) ? null : await abrir(impresoras.diagnostico)
   const page = principal.p
   const diag = segundo?.p
 
@@ -417,7 +546,7 @@ async function main() {
       if (PROBAR_VISOR) {
         const n = lista.find((x) => !SOLO.length || SOLO.includes(x))
         if (!n) { console.log('No hay llamadas para probar.'); break }
-        await probarVisor(page, diag, n)
+        await (MODO_PDF ? probarVisorPdf(page, n) : probarVisor(page, diag, n))
         break
       }
       const numero = lista.find((n) => !intentadas.has(n) && !pendienteRevision(n) && (!SOLO.length || SOLO.includes(n)))

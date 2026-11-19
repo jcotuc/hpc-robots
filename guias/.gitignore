@@ -4,3 +4,5 @@ capturas/
 logs/
 .sync.lock
 registro.json
+bin/
+pdfs/

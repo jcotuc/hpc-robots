@@ -47,3 +47,34 @@ export function impresorasDelEnv() {
   }
   return elegidas
 }
+
+// ─── Modo PDF (MODO_IMPRESION=pdf): imprimir sin navegador visible con SumatraPDF ───
+// SumatraPDF portable (sin administrador) manda el PDF a una impresora POR NOMBRE:
+// no hace falta cambiar la predeterminada de Windows ni tener un navegador por impresora.
+import { execFile } from 'node:child_process'
+import { existsSync as existe } from 'node:fs'
+import { resolve } from 'node:path'
+
+export const MODO_PDF = /^pdf$/i.test((process.env.MODO_IMPRESION || '').trim())
+
+export function rutaSumatra() {
+  const r = resolve((process.env.SUMATRA_PATH || 'bin/SumatraPDF.exe').trim())
+  if (!existe(r)) {
+    console.error(`❌ No está SumatraPDF en ${r}`)
+    console.error('   Corre setup.cmd otra vez (lo descarga solo) o pon la ruta en .env:  SUMATRA_PATH=C:\\ruta\\SumatraPDF.exe')
+    process.exit(1)
+  }
+  return r
+}
+
+/** Manda un archivo PDF a la impresora indicada. ajuste: fit | shrink | noscale (IMPRESION_AJUSTE del .env) */
+export function imprimirPdf(archivo, impresora, ajuste = (process.env.IMPRESION_AJUSTE || 'fit').trim()) {
+  const exe = rutaSumatra()
+  return new Promise((ok, mal) => {
+    execFile(exe, ['-print-to', impresora, '-print-settings', ajuste, '-silent', resolve(archivo)],
+      { windowsHide: true, timeout: 90_000 }, (err) => {
+        if (err) mal(new Error(`SumatraPDF no pudo imprimir en "${impresora}": ${err.killed ? 'tardó más de 90 s' : (err.code ?? err.message)}`))
+        else ok()
+      })
+  })
+}
