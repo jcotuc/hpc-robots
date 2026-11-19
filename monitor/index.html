@@ -327,7 +327,13 @@ const cuartoDe = (robot, pc) => meta(robot).grupo ? key(robot, '*') : key(robot,
 /* Reportes reales del grupo; conNivel = solo los del centro elegido arriba */
 function subKeys(k, conNivel = false) {
   const id = k.split('|')[0];
-  const ks = [...status.keys()].filter(x => x.startsWith(id + '|')).sort((a, b) => String(status.get(a).centro || a).localeCompare(String(status.get(b).centro || b)));
+  // Un puesto por centro: si una PC cambió de nombre (ROBOT_PC) quedan dos filas del mismo centro → se usa la que reportó más reciente
+  const porCentro = new Map();
+  [...status.keys()].filter(x => x.startsWith(id + '|')).forEach(x => {
+    const c = status.get(x).centro || meta(id).centro || x, otro = porCentro.get(c);
+    if (!otro || new Date(status.get(x).last_seen) > new Date(status.get(otro).last_seen)) porCentro.set(c, x);
+  });
+  const ks = [...porCentro.values()].sort((a, b) => String(status.get(a).centro || a).localeCompare(String(status.get(b).centro || b)));
   return conNivel && nivel !== 'todos' && ks.some(x => status.get(x).centro === nivel) ? ks.filter(x => status.get(x).centro === nivel) : ks;
 }
 const PRIORIDAD = ['error', 'trabajando', 'esperando', 'libre', 'durmiendo', 'caido', 'sindatos'];
@@ -914,40 +920,43 @@ function salaLogistica(q, s, est, t, col) {
    Cada puesto: letrero del centro, su robot (escritorio → GUIA → DIAG), OK de hoy y lo que tiene en 106 por imprimir */
 function salaLogisticaGrupo(q, est, t, col) {
   const m = meta('guias'), subs = subKeys(q.k, true);
-  const cols = Math.min(subs.length, 3), cw = (RW - 8) / cols;
+  const n = subs.length, cw = (RW - 8) / n, compacto = cw < 80;   // 3+ centros: una sola impresora por puesto
   subs.forEach((x, i) => {
     const x0 = Math.round(4 + cw * i), cx = Math.round(x0 + cw / 2), st = status.get(x), e = estadoVista(x);
     const dimP = ['caido', 'sindatos', 'durmiendo'].includes(e);
-    const centro = st?.centro || meta('guias').centro || 'SIN CENTRO';
+    const centro = st?.centro || m.centro || 'SIN CENTRO';
     const ok = resumen.get(x)?.ok_hoy || 0, err = resumen.get(x)?.errores_hoy || 0;
     const cg = carga.get(`guias@${centro}`), pend = cg && cg.pendientes !== null ? cg.pendientes : null;
-    letrero(cx - Math.min(30, cw / 2 - 3), 27, Math.min(60, cw - 6), corta(centro), col, dimP);
-    if (i > 0) px(x0 - 1, 40, 1, RH - 46, 'rgba(255,255,255,.06)');   // división entre puestos
-    // escritorio con compu (izquierda) y dos impresoras (derecha)
-    const PCx = x0 + 14, A = x0 + Math.round(cw * .42), B = x0 + Math.round(cw * .70);
-    escritorio(x0 + 4, 64, 22); compu(x0 + 7, 48, e, t, e === 'trabajando' || e === 'error');
-    // ciclo de trabajo: teclea → imprime guía → imprime diagnóstico → vuelve
+    if (i > 0) px(x0 - 2, 28, 1, RH - 32, 'rgba(255,255,255,.10)');            // pared entre puestos
+    letrero(x0 + 3, 27, Math.round(cw) - 8, corta(centro), col, dimP);
+    // izquierda: escritorio con compu · derecha: impresoras GUIA y DIAG
+    const D = x0 + 4, PCx = x0 + 14;
+    escritorio(D, 66, 22); compu(D + 3, 50, e, t, e === 'trabajando' || e === 'error');
+    const A = compacto ? x0 + Math.round(cw) - 28 : x0 + Math.round(cw) - 52, B = x0 + Math.round(cw) - 28;
+    // ciclo: teclea → imprime guía → imprime diagnóstico → vuelve
     const fase = ((t + i * 2300) % 6000) / 6000;
     const accion = e !== 'trabajando' ? 'quieto' : fase < .3 ? 'teclea' : fase < .4 ? 'aA' : fase < .6 ? 'imprimirA' : fase < .7 ? 'aB' : fase < .9 ? 'imprimirB' : 'vuelve';
     const f = accion === 'imprimirA' ? (fase - .4) / .2 : accion === 'imprimirB' ? (fase - .7) / .2 : 0;
     const errImp = e === 'error' && /imprim|visor|impresora|pdf|sumatra/i.test(st?.ultimo_error || '');
-    impresora(A, 52, 'GUIA', accion === 'imprimirA', f, errImp);
-    impresora(B, 52, 'DIAG', accion === 'imprimirB', f, errImp);
-    const lerp = (a, b, k) => Math.round(a + (b - a) * k);
-    const rx = accion === 'aA' ? lerp(PCx, A + 4, (fase - .3) / .1) : accion === 'imprimirA' ? A + 4 : accion === 'aB' ? lerp(A + 4, B + 4, (fase - .6) / .1)
-      : accion === 'imprimirB' ? B + 4 : accion === 'vuelve' ? lerp(B + 4, PCx, (fase - .9) / .1) : PCx;
+    if (compacto) impresora(A, 54, 'G+D', accion === 'imprimirA' || accion === 'imprimirB', f, errImp);
+    else { impresora(A, 54, 'GUIA', accion === 'imprimirA', f, errImp); impresora(B, 54, 'DIAG', accion === 'imprimirB', f, errImp); }
+    const lerp = (a, b, k) => Math.round(a + (b - a) * Math.max(0, Math.min(1, k)));
+    const pA = A + 6, pB = (compacto ? A : B) + 6;
+    const rx = accion === 'aA' ? lerp(PCx, pA, (fase - .3) / .1) : accion === 'imprimirA' ? pA : accion === 'aB' ? lerp(pA, pB, (fase - .6) / .1)
+      : accion === 'imprimirB' ? pB : accion === 'vuelve' ? lerp(pB, PCx, (fase - .9) / .1) : PCx;
     const pose = accion === 'teclea' ? 'teclea' : ['aA', 'aB', 'vuelve'].includes(accion) ? 'camina' : e === 'trabajando' || e === 'error' ? 'pie' : 'dormido';
-    if (!['caido', 'sindatos'].includes(e)) robot(rx, 80, col, { pose, t: t + i * 400, est: e, look: m.look, mira: accion === 'vuelve' ? -1 : 1 });
-    else texto('SIN REPORTE', cx, 84, 3, '#9ca3af', true);
-    if (e === 'trabajando' && st?.llamada) globo(rx, 60, String(st.llamada).slice(-6));
-    else if (e === 'error') globo(rx, 60, '!', '#ef4444', '#fff');
-    else if (pose === 'dormido' && !dimP) zzz(rx + 6, 66, t + i * 300);
-    // contadores del puesto
-    texto(`OK ${ok}` + (err ? ` · ${err} ERR` : ''), cx, 104, 3, err ? '#fecaca' : '#d1fae5', true);
-    texto(pend === null ? 'BANDEJA' : pend ? `${pend} POR IMPRIMIR` : 'AL DÍA', cx, 113, 3, pend ? '#fde68a' : '#6b6475', true);
+    if (!['caido', 'sindatos'].includes(e)) robot(rx, 90, col, { pose, t: t + i * 400, est: e, look: m.look, mira: accion === 'vuelve' ? -1 : 1 });
+    else texto('SIN REPORTE', cx, 88, 3, '#9ca3af', true);
+    // llamada en curso / error: una línea bajo el letrero (no tapa el letrero ni las impresoras)
+    if (e === 'trabajando' && st?.llamada) texto(String(st.llamada).slice(compacto ? -6 : -12), cx, 46, 3, '#f9fafb', true);
+    else if (e === 'error') texto('! ERROR', cx, 46, 3, '#fca5a5', true);
+    else if (pose === 'dormido' && !dimP) zzz(rx + 6, 74, t + i * 300);
+    // contadores al pie del puesto
+    texto(`OK ${ok}` + (err ? ` · ${err} ERR` : ''), cx, 106, 3, err ? '#fecaca' : '#d1fae5', true);
+    texto(pend === null ? 'BANDEJA' : pend ? `${pend} POR IMPRIMIR` : 'AL DÍA', cx, 114, 3, pend ? '#fde68a' : '#6b6475', true);
     const recien = ultimoOk.get(x) && Date.now() - new Date(ultimoOk.get(x)).getTime() < 15000;
-    if (recien && e !== 'error') { px(x0 + cw - 12, 29, 7, 7, '#22c55e'); px(x0 + cw - 10, 33, 1, 1, '#fff'); px(x0 + cw - 9, 34, 1, 1, '#fff'); px(x0 + cw - 8, 32, 1, 2, '#fff'); px(x0 + cw - 7, 30, 1, 2, '#fff'); }
-    if (dimP) { ctx.fillStyle = 'rgba(5,4,8,.35)'; ctx.fillRect(x0, 40, cw - 2, RH - 44); }
+    if (recien && e !== 'error') { const gx = x0 + Math.round(cw) - 14; px(gx, 40, 7, 7, '#22c55e'); px(gx + 2, 44, 1, 1, '#fff'); px(gx + 3, 45, 1, 1, '#fff'); px(gx + 4, 43, 1, 2, '#fff'); px(gx + 5, 41, 1, 2, '#fff'); }
+    if (dimP) { ctx.fillStyle = 'rgba(5,4,8,.35)'; ctx.fillRect(x0, 38, Math.round(cw) - 4, RH - 42); }
   });
   return null; // los robots ya se dibujaron
 }
