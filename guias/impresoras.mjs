@@ -88,3 +88,41 @@ export function papelImpresora(nombre) {
     return { w: Number(w) / 100, h: Number(h) / 100, nombre: n }
   } catch { return null }
 }
+
+// ─── Recorte de alto (la guía de CSHP mide 4.03 x 5 pulgadas y la etiqueta 4.1 x 4) ───
+// Si el PDF es más alto que la etiqueta, la TSC lo reparte en dos etiquetas. El contenido de la
+// guía está arriba (unas 3.5 pulgadas), así que se deja solo la parte de ARRIBA de ese alto.
+// pdf-lib se carga solo en modo PDF (import dinámico): Zona 6 en modo navegador no lo necesita
+const pdfLib = () => import('pdf-lib').then((m) => m.PDFDocument)
+import { readFileSync as leer, writeFileSync as escribir } from 'node:fs'
+
+/** Tamaño de la primera página en pulgadas: { w, h } o null */
+export async function tamanoPdfIn(archivo) {
+  try {
+    const doc = await (await pdfLib()).load(leer(archivo), { ignoreEncryption: true })
+    const { width, height } = doc.getPages()[0].getSize()
+    return { w: width / 72, h: height / 72 }
+  } catch { return null }
+}
+
+/** Devuelve la ruta de un PDF recortado a `altoIn` pulgadas (parte de arriba), o el mismo archivo si ya cabe */
+export async function recortarAlto(archivo, altoIn) {
+  if (!(altoIn > 0)) return archivo
+  const doc = await (await pdfLib()).load(leer(archivo), { ignoreEncryption: true })
+  const alto = altoIn * 72
+  let cambio = false
+  for (const p of doc.getPages()) {
+    const { width, height } = p.getSize()
+    if (height > alto + 1) { p.setMediaBox(0, height - alto, width, alto); p.setCropBox(0, height - alto, width, alto); cambio = true }
+  }
+  if (!cambio) return archivo
+  const salida = archivo.replace(/\.pdf$/i, '') + '-etiqueta.pdf'
+  escribir(salida, await doc.save())
+  return salida
+}
+
+/** Alto de etiqueta para cada documento (.env). Guía: 4 pulgadas por defecto; diagnóstico: sin recorte */
+export function altoEtiqueta(doc) {
+  const v = process.env[doc === 'guia' ? 'IMPRESION_ALTO_GUIA' : 'IMPRESION_ALTO_DIAGNOSTICO']
+  return v !== undefined && v.trim() !== '' ? Number(v) : (doc === 'guia' ? 4 : 0)
+}

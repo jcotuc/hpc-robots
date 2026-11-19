@@ -6,7 +6,7 @@
  *   npm.cmd run reimprimir -- guia C:\ruta\archivo.pdf noscale     (probar otro ajuste: fit | shrink | noscale)
  */
 import { readFileSync, existsSync } from 'node:fs'
-import { impresorasDelEnv, imprimirPdf } from './impresoras.mjs'
+import { impresorasDelEnv, imprimirPdf, recortarAlto, altoEtiqueta, tamanoPdfIn } from './impresoras.mjs'
 
 const [doc = '', archivo = '', ajusteArg = ''] = process.argv.slice(2)
 const tipo = /^g/i.test(doc) ? 'guia' : /^d/i.test(doc) ? 'diagnostico' : ''
@@ -17,13 +17,11 @@ if (!tipo || !archivo || !existsSync(archivo)) {
 const imp = impresorasDelEnv()[tipo]
 const ajuste = (ajusteArg || process.env[tipo === 'guia' ? 'IMPRESION_AJUSTE_GUIA' : 'IMPRESION_AJUSTE_DIAGNOSTICO'] || process.env.IMPRESION_AJUSTE || 'fit').trim()
 
-// Tamaño de la página del PDF (MediaBox, en puntos: 72 = 1 pulgada)
-const txt = readFileSync(archivo).toString('latin1')
-const m = txt.match(/MediaBox\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)/)
-if (m) {
-  const w = (m[3] - m[1]) / 72, h = (m[4] - m[2]) / 72
-  console.log(`Tamaño del PDF: ${w.toFixed(2)} x ${h.toFixed(2)} pulgadas (${(w * 2.54).toFixed(1)} x ${(h * 2.54).toFixed(1)} cm)`)
-}
+const t = await tamanoPdfIn(archivo)
+if (t) console.log(`Tamaño del PDF: ${t.w.toFixed(2)} x ${t.h.toFixed(2)} pulgadas (${(t.w * 2.54).toFixed(1)} x ${(t.h * 2.54).toFixed(1)} cm)`)
+const alto = altoEtiqueta(tipo)
+const aImprimir = await recortarAlto(archivo, alto)
+if (aImprimir !== archivo) console.log(`Recortado a ${alto} pulgadas de alto (parte de arriba) para que quepa en una etiqueta`)
 console.log(`Imprimiendo en ${imp} · ajuste ${ajuste}`)
-await imprimirPdf(archivo, imp, ajuste)
+await imprimirPdf(aImprimir, imp, ajuste)
 console.log('Enviado.')

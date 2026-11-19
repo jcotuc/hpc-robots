@@ -20,7 +20,7 @@
 import { chromium } from 'playwright'
 import { mkdirSync, openSync, writeSync, closeSync, readFileSync, writeFileSync, appendFileSync, unlinkSync, statSync, existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { impresorasDelEnv, impresoraPredeterminada, usarImpresora, MODO_PDF, rutaSumatra, imprimirPdf } from './impresoras.mjs'
+import { impresorasDelEnv, impresoraPredeterminada, usarImpresora, MODO_PDF, rutaSumatra, imprimirPdf, recortarAlto, altoEtiqueta } from './impresoras.mjs'
 import { crearMonitor } from '../shared/monitor.mjs'
 import { salirSiKardex } from '../shared/kardex-pausa.mjs'
 await salirSiKardex('guias')   // pausa mientras Kardex actualiza inventario en esta PC
@@ -360,10 +360,13 @@ async function obtenerPdf(page, selector, que, evitar = null, timeout = 40_000) 
     : `CSHP no entregó el PDF de la ${que} en ${timeout / 1000} s`)
 }
 
-/** Tamaño de la primera página del PDF en pulgadas, ej. "4.00x6.00" (para ajustar la impresión) */
-function tamanoPdf(buf) {
-  const m = buf.toString('latin1').match(/MediaBox\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)/)
-  return m ? `${((m[3] - m[1]) / 72).toFixed(2)}x${((m[4] - m[2]) / 72).toFixed(2)}in` : '?'
+/** Tamaño de la primera página del PDF en pulgadas, ej. "4.03x5.00in" (para ajustar la impresión) */
+async function tamanoPdf(buf) {
+  try {
+    const { PDFDocument } = await import('pdf-lib')
+    const { width, height } = (await PDFDocument.load(buf, { ignoreEncryption: true })).getPages()[0].getSize()
+    return `${(width / 72).toFixed(2)}x${(height / 72).toFixed(2)}in`
+  } catch { return '?' }
 }
 
 async function imprimirArchivo(pdf, numero, doc, impresora) {
@@ -372,7 +375,9 @@ async function imprimirArchivo(pdf, numero, doc, impresora) {
   writeFileSync(archivo, pdf.buffer)
   // Ajuste por documento si hace falta (ej. etiqueta de la TSC): IMPRESION_AJUSTE_GUIA / IMPRESION_AJUSTE_DIAGNOSTICO
   const ajuste = (process.env[doc === 'guia' ? 'IMPRESION_AJUSTE_GUIA' : 'IMPRESION_AJUSTE_DIAGNOSTICO'] || process.env.IMPRESION_AJUSTE || 'fit').trim()
-  await imprimirPdf(archivo, impresora, ajuste)
+  // La guía de CSHP mide 4x5 pulgadas: se recorta a la etiqueta (IMPRESION_ALTO_GUIA, 4 por defecto)
+  const aImprimir = await recortarAlto(archivo, altoEtiqueta(doc))
+  await imprimirPdf(aImprimir, impresora, ajuste)
   return archivo
 }
 
@@ -384,13 +389,13 @@ async function procesarPdf(page, numero, impresoras) {
 
   const g = await obtenerPdf(page, '#FrmLLamadasServ_CmdGuiaEnvio', 'guía')
   await imprimirArchivo(g, numero, 'guia', impresoras.guia)
-  anotar(numero, 'guia', { impresora: impresoras.guia, visor: g.url, pdf: g.hash.slice(0, 10), tamano: tamanoPdf(g.buffer) })
+  anotar(numero, 'guia', { impresora: impresoras.guia, visor: g.url, pdf: g.hash.slice(0, 10), tamano: await tamanoPdf(g.buffer) })
   console.log(`   🖨️  Guía → ${impresoras.guia}`)
 
   await esperarCSHP(page)
   const d = await obtenerPdf(page, '#FrmLLamadasServ_CmdDiagnostico', 'diagnóstico', g.hash)
   await imprimirArchivo(d, numero, 'diagnostico', impresoras.diagnostico)
-  anotar(numero, 'diagnostico', { impresora: impresoras.diagnostico, visor: d.url, pdf: d.hash.slice(0, 10), tamano: tamanoPdf(d.buffer) })
+  anotar(numero, 'diagnostico', { impresora: impresoras.diagnostico, visor: d.url, pdf: d.hash.slice(0, 10), tamano: await tamanoPdf(d.buffer) })
   console.log(`   🖨️  Diagnóstico → ${impresoras.diagnostico}`)
 
   await clic(page, '#FrmLLamadasServ_CmdAceptar')
@@ -406,7 +411,7 @@ async function probarVisorPdf(page, numero) {
   const d = await obtenerPdf(page, '#FrmLLamadasServ_CmdDiagnostico', 'diagnóstico')
   mkdirSync('capturas', { recursive: true })
   writeFileSync('capturas/prueba-diagnostico.pdf', d.buffer)
-  console.log(`   ✅ CSHP entregó el PDF (${Math.round(d.buffer.length / 1024)} KB, página ${tamanoPdf(d.buffer)}): ${d.url}`)
+  console.log(`   ✅ CSHP entregó el PDF (${Math.round(d.buffer.length / 1024)} KB, página ${await tamanoPdf(d.buffer)}): ${d.url}`)
   console.log('   Ábrelo para revisarlo:  start capturas\\prueba-diagnostico.pdf')
 }
 
@@ -444,7 +449,7 @@ async function probarGuia(page, impresoras) {
     .catch(() => { throw new Error('La llamada abrió pero no tiene el botón Guía de envío') })
   const g = await obtenerPdf(page, '#FrmLLamadasServ_CmdGuiaEnvio', 'guía')
   const archivo = await imprimirArchivo(g, numero, 'guia', impresoras.guia)
-  console.log(`   🖨️  Guía → ${impresoras.guia} · página ${tamanoPdf(g.buffer)} · guardada en ${archivo}`)
+  console.log(`   🖨️  Guía → ${impresoras.guia} · página ${await tamanoPdf(g.buffer)} · guardada en ${archivo}`)
   console.log(`   Para probar otro ajuste:  npm.cmd run reimprimir -- guia ${archivo.replace(/\//g, '\\')} noscale`)
 }
 
