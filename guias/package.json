@@ -14,7 +14,8 @@
     "probar-impresoras": "node --env-file=.env probar-impresoras.mjs",
     "log": "node ver-log.mjs",
     "vivo": "node ver-vivo.mjs",
-    "reimprimir": "node --env-file=.env reimprimir.mjs"
+    "reimprimir": "node --env-file=.env reimprimir.mjs",
+    "probar-guia": "node --env-file=.env imprimir-guias.mjs --prod --probar-guia"
   },
   "dependencies": {
     "playwright": "1.64.1"

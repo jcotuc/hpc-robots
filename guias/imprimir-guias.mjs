@@ -43,13 +43,16 @@ const FILTRO = (process.env.CSHP_FILTRO_LLAMADA ?? 'LLS').trim()
 const SOLO = String(process.env.SOLO_LLAMADAS || '').split(',').map((x) => x.trim().toUpperCase()).filter(Boolean)
 const SOLO_LISTAR = process.argv.includes('--solo-listar')
 const PROBAR_VISOR = process.argv.includes('--probar-visor')
+// Prueba: imprime SOLO la guía de una llamada (cualquier status), sin cambiar status ni Aceptar
+const PROBAR_GUIA = process.argv.includes('--probar-guia')
+const LLAMADA_PRUEBA = (process.argv.find((a) => /^LLS\d+-\d+$/i.test(a)) || '').toUpperCase()
 const LENTO = process.argv.includes('--lento')
 // Modo PDF: navegador oculto salvo con --lento o --visible (pruebas a mano)
 const VISIBLE = LENTO || process.argv.includes('--visible')
 const ES_PROD = !/tallerqa/i.test(BASE)
 const PATRON = /^LLS\d+-\d+$/i
 const REGISTRO = 'registro.json'
-const mon = crearMonitor('guias', { intervaloSeg: 180, activo: ES_PROD && !SOLO_LISTAR && !PROBAR_VISOR })
+const mon = crearMonitor('guias', { intervaloSeg: 180, activo: ES_PROD && !SOLO_LISTAR && !PROBAR_VISOR && !PROBAR_GUIA })
 
 const malas = SOLO.filter((n) => !PATRON.test(n))
 if (malas.length) {
@@ -406,6 +409,36 @@ async function probarVisorPdf(page, numero) {
   console.log('   Ábrelo para revisarlo:  start capturas\\prueba-diagnostico.pdf')
 }
 
+/** Prueba: busca una llamada en cualquier status, pide su guía y la imprime. No cambia status ni presiona Aceptar */
+async function probarGuia(page, impresoras) {
+  if (!MODO_PDF) throw new Error('probar-guia solo funciona con MODO_IMPRESION=pdf en el .env')
+  if (!LLAMADA_PRUEBA) throw new Error('Falta el número. Uso:  npm.cmd run probar-guia -- LLS21-123456')
+  console.log(`🔎 Prueba: solo la guía de ${LLAMADA_PRUEBA} (no cambia status ni presiona Aceptar)`)
+  await page.goto(`${BASE}/LLamadasServ.aspx`, { waitUntil: 'domcontentloaded' })
+  await esperarCSHP(page)
+  await elegirFiltro(page, '#FrmLLamadasServ_CmbFCentro', CENTRO, 'CSHP_CENTRO')
+  // Status: "todos" (la llamada ya está cerrada, no en Logística - Envío)
+  const combo = page.locator('#FrmLLamadasServ_CmbFStatus')
+  const ops = await combo.locator('option').evaluateAll((os) => os.map((o) => ({ v: o.value, t: (o.textContent || '').trim() })))
+  const todos = ops.find((o) => /todo/i.test(o.t)) || ops.find((o) => o.v === '' || o.v === '0') || ops[0]
+  await combo.selectOption(todos.v)
+  await esperarCSHP(page)
+  console.log(`   ↳ Status: ${todos.t || '(vacío)'}`)
+  await page.locator('#FrmLLamadasServ_TxtFLlamada').fill(LLAMADA_PRUEBA)
+  await clic(page, '#FrmLLamadasServ_CmdBuscar')
+  await esperarCSHP(page)
+  const link = page.getByRole('link', { name: LLAMADA_PRUEBA, exact: true }).first()
+  if (!(await link.count())) throw new Error(`${LLAMADA_PRUEBA} no aparece en ${CENTRO}. Revisa el número`)
+  await link.click()
+  await esperarCSHP(page)
+  await page.locator('#FrmLLamadasServ_CmdGuiaEnvio').waitFor({ state: 'visible', timeout: 15_000 })
+    .catch(() => { throw new Error('La llamada abrió pero no tiene el botón Guía de envío') })
+  const g = await obtenerPdf(page, '#FrmLLamadasServ_CmdGuiaEnvio', 'guía')
+  const archivo = await imprimirArchivo(g, LLAMADA_PRUEBA, 'guia', impresoras.guia)
+  console.log(`   🖨️  Guía → ${impresoras.guia} · página ${tamanoPdf(g.buffer)} · guardada en ${archivo}`)
+  console.log(`   Para probar otro ajuste:  npm.cmd run reimprimir -- guia ${archivo.replace(/\//g, '\\')} noscale`)
+}
+
 async function procesar(page, diag, numero, impresoras) {
   if (MODO_PDF) return procesarPdf(page, numero, impresoras)
   await abrirLlamada(page, numero)
@@ -493,7 +526,7 @@ async function main() {
   console.log(`\n🚀 Guías y diagnósticos · ${MODO_PDF ? 'modo PDF · ' : ''}${ES_PROD ? '⚠️  PRODUCCIÓN' : 'QA'} · ${BASE} · ${CENTRO} / status ${ESTADO_BUSCAR}${SOLO_LISTAR ? ' · SOLO LISTAR' : ''}\n`)
   if (!tomarCandado()) {
     console.log('⏸️  Ya hay otra corrida en proceso en esta PC. Se omite esta.')
-    if (!SOLO_LISTAR && !PROBAR_VISOR) resumen('OMITIDA corrida: la anterior sigue trabajando')
+    if (!SOLO_LISTAR && !PROBAR_VISOR && !PROBAR_GUIA) resumen('OMITIDA corrida: la anterior sigue trabajando')
     return
   }
 
@@ -538,6 +571,7 @@ async function main() {
   let hechas = 0
   try {
     await login(page)
+    if (PROBAR_GUIA) { await probarGuia(page, impresoras); return }
     let primera = true
     while (hechas < MAX) {
       // Con SOLO_LLAMADAS escribe el número en la búsqueda (más rápido y aunque esté en otra página)
@@ -593,7 +627,7 @@ async function main() {
   }
   console.log(`\n🏁 Terminado. Procesadas: ${hechas}`)
   // Una línea por corrida (aunque no haya llamadas): la usa el monitor en vivo (npm.cmd run vivo)
-  if (!SOLO_LISTAR && !PROBAR_VISOR) {
+  if (!SOLO_LISTAR && !PROBAR_VISOR && !PROBAR_GUIA) {
     const seg = Math.round((Date.now() - inicioCorrida) / 1000)
     resumen(`--- corrida ${ES_PROD ? 'PROD' : 'QA'}: ${hechas ? `${hechas} llamada(s) impresa(s)` : 'sin llamadas pendientes'}${intentadas.size > hechas ? ` · ${intentadas.size - hechas} con problema` : ''} (${seg} s)`)
   }
