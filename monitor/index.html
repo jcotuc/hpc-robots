@@ -143,8 +143,9 @@ const ROBOTS = [
   { id: 'cafeteria',   nombre: 'Cafetería',   sala: 'cafeteria',  global: true,     color: '#a16207' },
   /* look = accesorio del robot (cada uno se ve distinto): diadema | gorra | lentes | cartero | corbata | casco */
   { id: 'citas',       nombre: 'Citas',       sala: 'recepcion',  centro: 'Zona 4', color: '#f5c542', look: 'diadema', horario: { dias: LS, desde: '06:00', hasta: '22:00' } },
-  /* Guías puede correr en varios centros: cada PC pone ROBOT_CENTRO en su .env (ver monitor/03_centros.sql); sin eso = Nodus */
-  { id: 'guias',       nombre: 'Guías',       sala: 'logistica',  centro: 'Nodus',  color: '#60a5fa', look: 'gorra', horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
+  /* Guías corre en varios centros (una PC por centro, ROBOT_CENTRO en su .env; sin eso = Nodus).
+     grupo = UN cuarto de logística con un puesto por centro (su robot, sus impresoras GUIA/DIAG y su bandeja) */
+  { id: 'guias',       nombre: 'Guías',       sala: 'logistica',  centro: 'Nodus',  color: '#60a5fa', look: 'gorra', grupo: true, horario: { dias: LS, desde: '07:00', hasta: '20:00' } },
   /* grupo = todos sus reportes (uno por centro) van en UN solo cuarto, con un puesto por centro */
   { id: 'digitadores', nombre: 'Digitadores', sala: 'digitacion', centro: 'Nodus',  color: '#2dd4bf', look: 'lentes', grupo: true, horario: { dias: LS, desde: '06:00', hasta: '22:00' },
     /* Un puesto por estado de llamada. Para agregar otro: { id, nombre, rotulo, color, tipos: /texto/i } */
@@ -909,6 +910,48 @@ function salaLogistica(q, s, est, t, col) {
   return r;
 }
 
+/* Guías en varios centros: UN cuarto de logística con un puesto por centro.
+   Cada puesto: letrero del centro, su robot (escritorio → GUIA → DIAG), OK de hoy y lo que tiene en 106 por imprimir */
+function salaLogisticaGrupo(q, est, t, col) {
+  const m = meta('guias'), subs = subKeys(q.k, true);
+  const cols = Math.min(subs.length, 3), cw = (RW - 8) / cols;
+  subs.forEach((x, i) => {
+    const x0 = Math.round(4 + cw * i), cx = Math.round(x0 + cw / 2), st = status.get(x), e = estadoVista(x);
+    const dimP = ['caido', 'sindatos', 'durmiendo'].includes(e);
+    const centro = st?.centro || meta('guias').centro || 'SIN CENTRO';
+    const ok = resumen.get(x)?.ok_hoy || 0, err = resumen.get(x)?.errores_hoy || 0;
+    const cg = carga.get(`guias@${centro}`), pend = cg && cg.pendientes !== null ? cg.pendientes : null;
+    letrero(cx - Math.min(30, cw / 2 - 3), 27, Math.min(60, cw - 6), corta(centro), col, dimP);
+    if (i > 0) px(x0 - 1, 40, 1, RH - 46, 'rgba(255,255,255,.06)');   // división entre puestos
+    // escritorio con compu (izquierda) y dos impresoras (derecha)
+    const PCx = x0 + 14, A = x0 + Math.round(cw * .42), B = x0 + Math.round(cw * .70);
+    escritorio(x0 + 4, 64, 22); compu(x0 + 7, 48, e, t, e === 'trabajando' || e === 'error');
+    // ciclo de trabajo: teclea → imprime guía → imprime diagnóstico → vuelve
+    const fase = ((t + i * 2300) % 6000) / 6000;
+    const accion = e !== 'trabajando' ? 'quieto' : fase < .3 ? 'teclea' : fase < .4 ? 'aA' : fase < .6 ? 'imprimirA' : fase < .7 ? 'aB' : fase < .9 ? 'imprimirB' : 'vuelve';
+    const f = accion === 'imprimirA' ? (fase - .4) / .2 : accion === 'imprimirB' ? (fase - .7) / .2 : 0;
+    const errImp = e === 'error' && /imprim|visor|impresora|pdf|sumatra/i.test(st?.ultimo_error || '');
+    impresora(A, 52, 'GUIA', accion === 'imprimirA', f, errImp);
+    impresora(B, 52, 'DIAG', accion === 'imprimirB', f, errImp);
+    const lerp = (a, b, k) => Math.round(a + (b - a) * k);
+    const rx = accion === 'aA' ? lerp(PCx, A + 4, (fase - .3) / .1) : accion === 'imprimirA' ? A + 4 : accion === 'aB' ? lerp(A + 4, B + 4, (fase - .6) / .1)
+      : accion === 'imprimirB' ? B + 4 : accion === 'vuelve' ? lerp(B + 4, PCx, (fase - .9) / .1) : PCx;
+    const pose = accion === 'teclea' ? 'teclea' : ['aA', 'aB', 'vuelve'].includes(accion) ? 'camina' : e === 'trabajando' || e === 'error' ? 'pie' : 'dormido';
+    if (!['caido', 'sindatos'].includes(e)) robot(rx, 80, col, { pose, t: t + i * 400, est: e, look: m.look, mira: accion === 'vuelve' ? -1 : 1 });
+    else texto('SIN REPORTE', cx, 84, 3, '#9ca3af', true);
+    if (e === 'trabajando' && st?.llamada) globo(rx, 60, String(st.llamada).slice(-6));
+    else if (e === 'error') globo(rx, 60, '!', '#ef4444', '#fff');
+    else if (pose === 'dormido' && !dimP) zzz(rx + 6, 66, t + i * 300);
+    // contadores del puesto
+    texto(`OK ${ok}` + (err ? ` · ${err} ERR` : ''), cx, 104, 3, err ? '#fecaca' : '#d1fae5', true);
+    texto(pend === null ? 'BANDEJA' : pend ? `${pend} POR IMPRIMIR` : 'AL DÍA', cx, 113, 3, pend ? '#fde68a' : '#6b6475', true);
+    const recien = ultimoOk.get(x) && Date.now() - new Date(ultimoOk.get(x)).getTime() < 15000;
+    if (recien && e !== 'error') { px(x0 + cw - 12, 29, 7, 7, '#22c55e'); px(x0 + cw - 10, 33, 1, 1, '#fff'); px(x0 + cw - 9, 34, 1, 1, '#fff'); px(x0 + cw - 8, 32, 1, 2, '#fff'); px(x0 + cw - 7, 30, 1, 2, '#fff'); }
+    if (dimP) { ctx.fillStyle = 'rgba(5,4,8,.35)'; ctx.fillRect(x0, 40, cw - 2, RH - 44); }
+  });
+  return null; // los robots ya se dibujaron
+}
+
 /* Digitadores: UN cuarto general con un puesto por centro (cada reporte "HPCLPJCOTUC · <centro>").
    Con un centro elegido arriba solo se ve su puesto. Cada puesto muestra su centro, su estado y cuántas lleva hoy. */
 function salaDigitacion(q, s, est, t, col) {
@@ -1603,7 +1646,8 @@ function dibujarCuarto1(q, t) {
   const nombre = m.sala === 'jefatura' || m.sala === 'cafeteria' ? T.sala[m.sala] : nivel === 'todos' && cen !== COMUN && !m.global && !esGrupo(q.k) ? `${m.nombre} · ${corta(cen)}` : m.nombre;
   cuartoBase(q, nombre.toUpperCase(), m.color, dim, t);
   let r;
-  if (m.sala === 'logistica') r = salaLogistica(q, s, est, t, m.color);
+  if (m.sala === 'logistica' && esGrupo(q.k) && subKeys(q.k, true).length > 1) r = salaLogisticaGrupo(q, est, t, m.color);
+  else if (m.sala === 'logistica') { const k1 = esGrupo(q.k) ? (subKeys(q.k, true)[0] || q.k) : q.k; r = salaLogistica({ ...q, k: k1 }, status.get(k1) || s, est, t, m.color); }
   else if (m.sala === 'digitacion') r = salaDigitacion(q, s, est, t, m.color);
   else if (m.sala === 'recepcion') r = salaRecepcion(q, s, est, t, m.color);
   else if (m.sala === 'correo' && m.areas) r = salaCorreo(q, s, est, t, m.color, m.areas);
@@ -1891,7 +1935,8 @@ function initDemo() {
   const now = Date.now(), iso = ms => new Date(ms).toISOString();
   const base = [
     { robot: 'citas',       pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: 'LLS21-558012', detalle: 'Cita 412 · equipo 1 · SKU 4521', intervalo_seg: 300 },
-    { robot: 'guias',       pc: 'HPCPCLOGISTICA', estado: 'trabajando', llamada: 'LLS21-557465', detalle: 'Procesando', intervalo_seg: 180 },
+    { robot: 'guias',       pc: 'HPCPCLOGISTICA', centro: 'Nodus', estado: 'trabajando', llamada: 'LLS21-557465', detalle: 'Procesando', intervalo_seg: 180 },
+    { robot: 'guias',       pc: 'HPCLPJLOPEZ',    centro: 'Morales', estado: 'esperando', detalle: 'Sin llamadas', intervalo_seg: 180 },
     { robot: 'digitadores', pc: 'HPCLPJCOTUC · Nodus', centro: 'Nodus', estado: 'trabajando', llamada: 'LLS21-556758', detalle: 'Procesando', intervalo_seg: 180 },
     { robot: 'correos',     pc: 'HPCLPJCOTUC',    estado: 'trabajando', llamada: '89DC279B', detalle: 'Enviando autoconsumo_solicitud', intervalo_seg: 120 },
     { robot: 'garantias',   pc: 'HPCPCGARANTIAS', estado: 'trabajando', llamada: 'LLS21-559900', detalle: 'NDC cliente C1042', intervalo_seg: 1800 },
