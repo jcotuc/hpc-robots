@@ -317,8 +317,12 @@ async function revisarCarga() {
   await intenta('guias', async () => {
     if (minEnHorario('guias') === null) return { n: null, detalle: 'Fuera de horario: no se revisó CSHP' }
     if (cshpCaido) return { n: null, detalle: 'CSHP no responde: no se pudo revisar' }
-    const lista = await pendientesGuias(await sesionCSHP(), { centro: E.GUIAS_CENTRO || 'HPCS016', status: E.GUIAS_STATUS || '106' })
-    return { n: lista.length, detalle: lista.length ? `${lista.length} LLS en 106 por imprimir: ${lista.slice(0, 5).join(', ')}` : 'Sin LLS en 106 por imprimir' }
+    // Un centro por cada PC de guías (GUIAS_CENTRO=HPCS016,HPCS015 → Zona 6 y Morales)
+    const centros = String(E.GUIAS_CENTRO || 'HPCS016,HPCS015').split(',').map((c) => c.trim()).filter(Boolean)
+    const cshp = await sesionCSHP(), porCentro = []
+    for (const c of centros) porCentro.push([c, await pendientesGuias(cshp, { centro: c, status: E.GUIAS_STATUS || '106' })])
+    const n = porCentro.reduce((a, [, l]) => a + l.length, 0)
+    return { n, detalle: n ? `${n} LLS en 106 por imprimir · ${porCentro.map(([c, l]) => `${c}: ${l.length}`).join(' · ')}` : 'Sin LLS en 106 por imprimir' }
   })
   Object.entries(CARGA).forEach(([r, c]) => log(`CARGA ${r}: ${c.n ?? '?'} · ${c.detalle}`))
   if (PROD) {

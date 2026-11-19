@@ -882,7 +882,10 @@ function salaLogistica(q, s, est, t, col) {
   const ok = Math.min(6, resumen.get(q.k)?.ok_hoy || 0);
   for (let i = 0; i < ok; i++) { const bx = 140 + (i % 3) * 11, by = 104 - Math.floor(i / 3) * 8; px(bx, by, 10, 8, '#b45309'); px(bx, by, 10, 1, '#d97706'); px(bx + 4, by, 2, 8, '#fde68a'); }
   // bandeja de entrada: llamadas que Digitadores mandó a logística y Guías aún no imprime
-  const porImprimir = [...flujo.values()].filter(f => f.a === 'guias' && !f.impresa).length;
+  // Lo real: LLS en 106 que contó el Jefe en CSHP (centros con robot de guías). Si no hay dato, lo que Digitadores mandó HOY
+  const cgG = cargaDe(q.k), hoyIni = new Date(new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' }) + 'T00:00:00-06:00').getTime();
+  const porImprimir = cgG && cgG.pendientes !== null ? cgG.pendientes
+    : [...flujo.values()].filter(f => f.a === 'guias' && !f.impresa && new Date(f.at).getTime() >= hoyIni).length;
   px(10, 96, 26, 3, T.pata); px(12, 99, 2, 10, '#3f2a1a'); px(32, 99, 2, 10, '#3f2a1a');
   for (let i = 0; i < Math.min(5, porImprimir); i++) px(13 + (i % 2) * 2, 90 - i * 3, 18, 3, i % 2 ? '#d97706' : '#b45309');
   texto(porImprimir ? `${porImprimir} POR IMPRIMIR` : 'BANDEJA', 23, 116, 3, porImprimir ? '#fde68a' : '#6b6475', true);
