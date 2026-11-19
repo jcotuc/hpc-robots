@@ -5,7 +5,9 @@ $ErrorActionPreference = 'Stop'
 $nombre = 'HPC Correos'
 $cmd = Join-Path $PSScriptRoot 'correr.cmd'
 
-$accion = New-ScheduledTaskAction -Execute $cmd -WorkingDirectory $PSScriptRoot
+# Sin ventana negra: wscript corre correr.cmd oculto
+$vbs = Join-Path $PSScriptRoot 'correr-oculto.vbs'
+$accion = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument "//B //Nologo `"$vbs`"" -WorkingDirectory $PSScriptRoot
 $disparo = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday, Saturday -At '07:00'
 $disparo.Repetition = (New-ScheduledTaskTrigger -Once -At '07:00' -RepetitionInterval (New-TimeSpan -Minutes 2) -RepetitionDuration (New-TimeSpan -Hours 13)).Repetition
 $ajustes = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
