@@ -11,7 +11,8 @@ import { crearMonitor } from '../shared/monitor.mjs'
 import { mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { abrirCSHP, cerrarCSHP, leerLlamada, cshpResponde, pendientesGuias } from './cshp.mjs'
 import { investigar, recordar } from './investigar.mjs'
-import { telegramListo, alertaCritica, quizasResumen, procesarMensajes, cargarReglas, reglaAplica } from './telegram.mjs'
+import { contextoTelegram } from './contexto-telegram.mjs'
+import { telegramListo, alertaCritica, quizasResumen, procesarMensajes, escuchaViva, cargarReglas, reglaAplica } from './telegram.mjs'
 import { salirSiKardex } from '../shared/kardex-pausa.mjs'
 await salirSiKardex('jefe')   // pausa mientras Kardex actualiza inventario en esta PC
 
@@ -273,18 +274,6 @@ async function revisarCshp() {
 }
 
 /* Resumen de Logística - Envío del día (va en el resumen de Telegram, ya no como alertas sueltas) */
-function resumenLogistica() {
-  const hoy = fechaGT(), del = Object.entries(leerAud()).filter(([, a]) => a.estado === 'alerta' && a.revisada && new Date(a.revisada).toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' }) === hoy)
-  if (!del.length) return ''
-  const persona = del.filter(([, a]) => !a.debe && a.paso && !a.robot), robot = del.filter(([, a]) => !a.debe && a.paso && a.robot), falto = del.filter(([, a]) => a.debe && !a.paso)
-  const quien = {}
-  for (const [, a] of persona) { const u = (String(a.logistica || '').split(' · ').pop() || '?').trim(); quien[u] = (quien[u] || 0) + 1 }
-  const L = ['<b>Logística - Envío (auditoría LLM)</b>']
-  if (persona.length) L.push(`• ${persona.length} pasadas a mano sin ser envío/Cemaco: ${Object.entries(quien).sort((a, b) => b[1] - a[1]).map(([u, n]) => `${u} (${n})`).join(', ')}`)
-  if (robot.length) L.push(`• 🚨 ${robot.length} pasadas por el ROBOT sin regla`)
-  if (falto.length) L.push(`• ${falto.length} debían ir a Logística y no fueron: ${falto.slice(0, 5).map(([n]) => n).join(', ')}`)
-  return L.join('\n')
-}
 
 async function revisarCarga() {
   const intenta = async (robot, fn) => { try { CARGA[robot] = await fn() } catch (e) { CARGA[robot] = { n: null, detalle: `No se pudo revisar: ${corto(e, 150)}` } } }
@@ -412,26 +401,11 @@ async function avisar(h, abierto, id = null) {
   return true
 }
 
-/* Contexto que usa telegram.mjs (preguntas, botones, aprender de Joshua) */
-function contextoTelegram() {
-  return { q, KK, CC, NOMBRES, corto, log, resumenLogistica, leerAud,
-      calificar: async (patron, bien) => {
-        const m = (await q(KK, `jefe_aprendizaje?select=confirmadas,rechazadas&patron=eq.${encodeURIComponent(patron)}`))[0]; if (!m) return
-        await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal',
-          body: bien ? { confirmadas: (m.confirmadas || 0) + 1 } : { rechazadas: (m.rechazadas || 0) + 1 } })
-        log(`TELEGRAM ${bien ? 'confirmó' : 'rechazó'} la causa de ${patron}`)
-      },
-      enseñar: async (patron, causa, accion) => {
-        await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal', body: { causa_joshua: causa, ...(accion ? { accion_joshua: accion } : {}) } })
-        log(`TELEGRAM aprendió de Joshua para ${patron}: ${causa}`)
-      } }
-}
-
 async function main() {
   log(`=== Jefe · ${PROD ? 'PROD' : 'QA (solo muestra)'} ===`)
   mon.trabajando(null, 'Revisando a los robots')
   // Telegram primero: contesta tus mensajes antes de la revisión larga (CSHP), así respondo en segundos y no al final
-  if (PROD && telegramListo()) await procesarMensajes(contextoTelegram()).catch((e) => log(`Telegram: ${corto(e, 150)}`))
+  if (PROD && telegramListo() && !escuchaViva()) await procesarMensajes(contextoTelegram()).catch((e) => log(`Telegram: ${corto(e, 150)}`))
   const encontrados = [], revisadas = [], fallas = []
   for (const [nombre, fn] of Object.entries(REVISIONES)) {
     try { encontrados.push(...await fn()); revisadas.push(nombre) }

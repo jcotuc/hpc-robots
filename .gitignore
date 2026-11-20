@@ -21,3 +21,5 @@ centros-dungeon.json
 telegram-estado.json
 # Jefe: cola y reglas propuestas por la IA local
 jefe/cerebro/
+telegram-escucha.vivo
+telegram-resumenes.json

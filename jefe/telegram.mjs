@@ -22,6 +22,10 @@ const TOKEN = (process.env.TELEGRAM_TOKEN || '').trim()
 const CHAT = (process.env.TELEGRAM_CHAT_ID || '').trim()
 const ESTADO = 'telegram-estado.json'   // offset, silencios, resúmenes enviados, regla por confirmar (local, no va a git)
 export const telegramListo = () => Boolean(TOKEN && CHAT)
+/* escucha.mjs (siempre encendido) contesta al instante; si está apagado, el Jefe contesta en su ronda */
+const VIVO = 'telegram-escucha.vivo'
+export const marcarEscuchaViva = () => { try { writeFileSync(VIVO, new Date().toISOString()) } catch {} }
+export const escuchaViva = () => { try { return Date.now() - new Date(readFileSync(VIVO, 'utf8')).getTime() < 3 * 60000 } catch { return false } }
 
 const leerEstado = () => { try { return JSON.parse(readFileSync(ESTADO, 'utf8')) } catch { return { offset: 0, silencio: {}, resumenes: {} } } }
 const guardarEstado = (e) => { try { writeFileSync(ESTADO, JSON.stringify(e, null, 1)) } catch { /* nunca detiene */ } }
@@ -33,9 +37,9 @@ const hace = (d) => { const m = Math.round((Date.now() - new Date(d).getTime()) 
 const horaGT = (d) => new Date(d).toLocaleTimeString('es-GT', { timeZone: 'America/Guatemala', hour: '2-digit', minute: '2-digit', hour12: false })
 
 async function api(metodo, cuerpo, intento = 1) {
-  // la red a veces tarda en llegar a Telegram: 25 s y un reintento antes de rendirse
+  // la red a veces tarda en llegar a Telegram: 25 s (más la espera de getUpdates) y un reintento antes de rendirse
   const r = await fetch(`https://api.telegram.org/bot${TOKEN}/${metodo}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo), signal: AbortSignal.timeout(25000),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo), signal: AbortSignal.timeout(25000 + (cuerpo.timeout || 0) * 1000),
   }).catch((e) => { if (intento < 2) return null; throw e })
   if (!r) return api(metodo, cuerpo, intento + 1)
   const j = await r.json().catch(() => ({}))
@@ -80,14 +84,15 @@ export async function alertaCritica(hz, id) {
 
 /* ═════════════════ Resumen 7:00 y 18:00 ═════════════════ */
 export async function quizasResumen(ctx) {
-  const est = leerEstado(), p = partesGT()
+  const RES = 'telegram-resumenes.json', p = partesGT()
+  let est = {}; try { est = JSON.parse(readFileSync(RES, 'utf8')) } catch { est = { resumenes: leerEstado().resumenes || {} } }
   const turno = p.min >= 18 * 60 ? 'tarde' : p.min >= 7 * 60 ? 'manana' : null
   if (!turno || p.dia === 0) return
   const clave = `${p.fecha}-${turno}`
   if (est.resumenes?.[clave]) return
   await enviar(await textoResumen(ctx, turno === 'manana' ? '☀️ Buenos días, así amanecen los robots' : '🌙 Cierre del día'))
   est.resumenes = Object.fromEntries(Object.entries({ ...(est.resumenes || {}), [clave]: new Date().toISOString() }).slice(-20))
-  guardarEstado(est)
+  try { writeFileSync(RES, JSON.stringify(est)) } catch {}
 }
 async function textoResumen(ctx, titulo, filtro = {}) {
   const { q, KK } = ctx, inicio = new Date(`${partesGT().fecha}T00:00:00-06:00`).toISOString()
@@ -115,10 +120,12 @@ async function textoResumen(ctx, titulo, filtro = {}) {
 }
 
 /* ═════════════════ Conversación ═════════════════ */
-export async function procesarMensajes(ctx) {
-  const est = leerEstado()
+export async function procesarMensajes(ctx, espera = 0) {
+  let est = leerEstado()
   let ups = []
-  try { ups = await api('getUpdates', { offset: est.offset || 0, timeout: 0, allowed_updates: ['message', 'callback_query'] }) } catch (e) { ctx.log(`Telegram: ${ctx.corto(e, 120)}`); return }
+  try { ups = await api('getUpdates', { offset: est.offset || 0, timeout: espera, allowed_updates: ['message', 'callback_query'] }) } catch (e) { ctx.log(`Telegram: ${ctx.corto(e, 120)}`); return false }
+  if (!ups.length) return true
+  est = leerEstado()   // pudo cambiar mientras esperaba
   for (const u of ups) {
     est.offset = u.update_id + 1
     try {
@@ -127,6 +134,7 @@ export async function procesarMensajes(ctx) {
     } catch (e) { ctx.log(`Telegram (respuesta): ${ctx.corto(e, 150)}`); await enviar(`😵 Me trabé contestando eso: <code>${h(ctx.corto(e, 120))}</code>`).catch(() => {}) }
   }
   guardarEstado(est)
+  return true
 }
 
 async function mensaje(m, est, ctx) {

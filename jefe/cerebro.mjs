@@ -8,7 +8,7 @@
  *   node --env-file=.env cerebro.mjs --probar "pregunta"   prueba la IA sin Telegram
  * .env: OLLAMA_MODEL=qwen2.5:3b   OLLAMA_URL=http://127.0.0.1:11434 (opcional)
  */
-import { readdirSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, appendFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, appendFileSync, statSync } from 'node:fs'
 import { enviar, h, textoPropuestaRegla, telegramListo } from './telegram.mjs'
 
 const E = process.env
@@ -139,6 +139,11 @@ async function main() {
   const items = readdirSync('cerebro/cola').filter((f) => f.endsWith('.json')).sort()
   if (!items.length) return
   if (!MODELO || !telegramListo()) { log('Hay cola pero falta OLLAMA_MODEL o Telegram en .env'); return }
+  // un solo cerebro a la vez (lo despiertan escucha.mjs y su tarea de cada 2 min)
+  const LOCK = 'cerebro/.pensando'
+  try { if (Date.now() - statSync(LOCK).mtimeMs < 10 * 60000) return } catch {}
+  writeFileSync(LOCK, String(process.pid))
+  process.on('exit', () => { try { unlinkSync(LOCK) } catch {} })
   for (const f of items.slice(0, 3)) {   // máx. 3 por vuelta (cada respuesta tarda)
     const ruta = `cerebro/cola/${f}`, item = JSON.parse(readFileSync(ruta, 'utf8'))
     log(`PIENSA ${item.tipo}: ${corto(item.texto, 120)}`)
