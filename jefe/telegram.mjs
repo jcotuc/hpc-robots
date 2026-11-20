@@ -32,10 +32,12 @@ const barra = (n, max, w = 8) => { const k = max ? Math.round((n / max) * w) : 0
 const hace = (d) => { const m = Math.round((Date.now() - new Date(d).getTime()) / 60000); return m < 1 ? 'ahora' : m < 60 ? `hace ${m} min` : m < 1440 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} d` }
 const horaGT = (d) => new Date(d).toLocaleTimeString('es-GT', { timeZone: 'America/Guatemala', hour: '2-digit', minute: '2-digit', hour12: false })
 
-async function api(metodo, cuerpo) {
+async function api(metodo, cuerpo, intento = 1) {
+  // la red a veces tarda en llegar a Telegram: 25 s y un reintento antes de rendirse
   const r = await fetch(`https://api.telegram.org/bot${TOKEN}/${metodo}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo), signal: AbortSignal.timeout(12000),
-  })
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cuerpo), signal: AbortSignal.timeout(25000),
+  }).catch((e) => { if (intento < 2) return null; throw e })
+  if (!r) return api(metodo, cuerpo, intento + 1)
   const j = await r.json().catch(() => ({}))
   if (!j.ok) throw new Error(`Telegram ${metodo}: ${j.description || r.status}`)
   return j.result

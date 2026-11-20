@@ -234,7 +234,8 @@ async function revisarCshp() {
   const evs = await q(KK, `robot_eventos?select=llamada,mensaje,created_at&robot=eq.digitadores&tipo=eq.ok&llamada=not.is.null&created_at=gte.${[haceMin(2 * 24 * 60), AUDITAR_DESDE].filter(Boolean).sort().pop()}&created_at=lt.${haceMin(2)}&order=created_at&limit=500`)
   const robotLaPaso = new Map(evs.map((e) => [e.llamada.toUpperCase(), /log[ií]stica/i.test(e.mensaje || '')]))
   const porRevisar = [...new Set(evs.filter((e) => /DIGITADA/i.test(e.mensaje || '')).map((e) => e.llamada.toUpperCase()))]
-    .filter((n) => !aud[n] || aud[n].estado === 'alerta')
+    // las que ya están en alerta se re-revisan cada 2 h (antes cada 3 min: cargaba CSHP y llenaba el log)
+    .filter((n) => !aud[n] || (aud[n].estado === 'alerta' && Date.now() - new Date(aud[n].revisada).getTime() > 2 * 3600000))
     .sort((a, b) => (aud[a]?.estado === 'alerta' ? 1 : 0) - (aud[b]?.estado === 'alerta' ? 1 : 0))
     .slice(0, MAX_AUDITAR)
   if (porRevisar.length) {
