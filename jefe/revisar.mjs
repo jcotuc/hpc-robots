@@ -11,7 +11,7 @@ import { crearMonitor } from '../shared/monitor.mjs'
 import { mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { abrirCSHP, cerrarCSHP, leerLlamada, cshpResponde, pendientesGuias } from './cshp.mjs'
 import { investigar, recordar } from './investigar.mjs'
-import { telegramListo, alertaCritica, quizasResumen, procesarMensajes } from './telegram.mjs'
+import { telegramListo, alertaCritica, quizasResumen, procesarMensajes, cargarReglas, reglaAplica } from './telegram.mjs'
 import { salirSiKardex } from '../shared/kardex-pausa.mjs'
 await salirSiKardex('jefe')   // pausa mientras Kardex actualiza inventario en esta PC
 
@@ -423,6 +423,15 @@ async function main() {
   const ordenes = encontrados.filter((x) => x.orden).map((x) => x.orden)
   encontrados.splice(0, encontrados.length, ...encontrados.filter((x) => !x.orden))
   ordenes.forEach((o) => log(`ORDEN ${o.accion} ${o.num_llamada}: ${o.sku_cshp} → ${o.sku_nuevo} (${o.motivo})`))
+  // ── Reglas que Joshua le enseñó por Telegram: cambian el nivel o las ignora ──
+  const reglas = await cargarReglas({ q, KK })
+  for (let i = encontrados.length - 1; i >= 0; i--) {
+    const hz = encontrados[i], r = reglas.find((x) => reglaAplica(x, hz))
+    if (!r) continue
+    hz.regla = r
+    if (r.nivel === 'ignorar') { encontrados.splice(i, 1); continue }
+    if (r.nivel) hz.severidad = r.nivel
+  }
   if (PROD) log(`HALLAZGOS ${encontrados.length} (${encontrados.filter((h) => h.severidad === 'alta').length} críticos)`)
   else encontrados.forEach((h) => log(`${h.severidad === 'alta' ? 'ALTA ' : 'MEDIA'} ${h.titulo} — ${h.detalle || ''}`))
   if (!encontrados.length && !ordenes.length) log('Todo en orden.')
@@ -447,6 +456,11 @@ async function main() {
     for (const p of inv.patrones || []) if (!(ya?.patrones || []).includes(p.patron)) aprender.set(p.patron, p)
     log(`   CAUSA ${h.clave}: ${h.causa || '?'}${h.accion ? ` → ${h.accion}` : ''}`)
     if (h.aprendido) log(`   SABE  ${h.aprendido.replace(/\n/g, ' | ')}`)
+  }
+  for (const hz of encontrados.filter((x) => x.regla && (x.regla.causa || x.regla.accion))) {
+    if (hz.regla.causa) hz.causa = `${hz.regla.causa} (regla tuya)`
+    if (hz.regla.accion) hz.accion = hz.regla.accion
+    hz.investigado = true
   }
   if (!PROD) return
   for (const o of ordenes) {
@@ -482,6 +496,7 @@ async function main() {
       const fila = (await q(KK, 'jefe_hallazgos', { method: 'POST', prefer: 'return=representation', body: { ...datos, clave: h.clave, abierto_en: ahora } }))?.[0]
       const avisado = fila ? await avisar(h, ahora, fila.id).catch((e) => { log(`No se pudo avisar: ${corto(e)}`); return false }) : false
       if (avisado) await q(KK, `jefe_hallazgos?id=eq.${fila.id}`, { method: 'PATCH', body: { avisado_en: ahora }, prefer: 'return=minimal' }).catch(() => {})
+      if (h.regla) await q(KK, `jefe_reglas?id=eq.${h.regla.id}`, { method: 'PATCH', prefer: 'return=minimal', body: { aplicada: (h.regla.aplicada || 0) + 1 } }).catch(() => {})
       mon.revisar(null, `Nuevo: ${h.titulo}`)
       log(`ABIERTO ${h.clave}${avisado ? (telegramListo() ? ' (Telegram)' : ' (correo encolado)') : ''}`)
     }
@@ -505,7 +520,7 @@ async function main() {
     log(`CERRADO ${a.clave}`)
   }
   if (telegramListo()) {
-    const tctx = { q, KK, NOMBRES, corto, log, resumenLogistica,
+    const tctx = { q, KK, CC, NOMBRES, corto, log, resumenLogistica, leerAud,
       calificar: async (patron, bien) => {
         const m = (await q(KK, `jefe_aprendizaje?select=confirmadas,rechazadas&patron=eq.${encodeURIComponent(patron)}`))[0]; if (!m) return
         await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal',
