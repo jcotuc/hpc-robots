@@ -412,9 +412,26 @@ async function avisar(h, abierto, id = null) {
   return true
 }
 
+/* Contexto que usa telegram.mjs (preguntas, botones, aprender de Joshua) */
+function contextoTelegram() {
+  return { q, KK, CC, NOMBRES, corto, log, resumenLogistica, leerAud,
+      calificar: async (patron, bien) => {
+        const m = (await q(KK, `jefe_aprendizaje?select=confirmadas,rechazadas&patron=eq.${encodeURIComponent(patron)}`))[0]; if (!m) return
+        await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal',
+          body: bien ? { confirmadas: (m.confirmadas || 0) + 1 } : { rechazadas: (m.rechazadas || 0) + 1 } })
+        log(`TELEGRAM ${bien ? 'confirmó' : 'rechazó'} la causa de ${patron}`)
+      },
+      enseñar: async (patron, causa, accion) => {
+        await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal', body: { causa_joshua: causa, ...(accion ? { accion_joshua: accion } : {}) } })
+        log(`TELEGRAM aprendió de Joshua para ${patron}: ${causa}`)
+      } }
+}
+
 async function main() {
   log(`=== Jefe · ${PROD ? 'PROD' : 'QA (solo muestra)'} ===`)
   mon.trabajando(null, 'Revisando a los robots')
+  // Telegram primero: contesta tus mensajes antes de la revisión larga (CSHP), así respondo en segundos y no al final
+  if (PROD && telegramListo()) await procesarMensajes(contextoTelegram()).catch((e) => log(`Telegram: ${corto(e, 150)}`))
   const encontrados = [], revisadas = [], fallas = []
   for (const [nombre, fn] of Object.entries(REVISIONES)) {
     try { encontrados.push(...await fn()); revisadas.push(nombre) }
@@ -522,21 +539,8 @@ async function main() {
     mon.ok(null, `Resuelto: ${a.clave}`)
     log(`CERRADO ${a.clave}`)
   }
-  if (telegramListo()) {
-    const tctx = { q, KK, CC, NOMBRES, corto, log, resumenLogistica, leerAud,
-      calificar: async (patron, bien) => {
-        const m = (await q(KK, `jefe_aprendizaje?select=confirmadas,rechazadas&patron=eq.${encodeURIComponent(patron)}`))[0]; if (!m) return
-        await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal',
-          body: bien ? { confirmadas: (m.confirmadas || 0) + 1 } : { rechazadas: (m.rechazadas || 0) + 1 } })
-        log(`TELEGRAM ${bien ? 'confirmó' : 'rechazó'} la causa de ${patron}`)
-      },
-      enseñar: async (patron, causa, accion) => {
-        await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal', body: { causa_joshua: causa, ...(accion ? { accion_joshua: accion } : {}) } })
-        log(`TELEGRAM aprendió de Joshua para ${patron}: ${causa}`)
-      } }
-    await procesarMensajes(tctx).catch((e) => log(`Telegram: ${corto(e, 150)}`))
-    await quizasResumen(tctx).catch((e) => log(`Telegram resumen: ${corto(e, 150)}`))
-  }
+  if (telegramListo()) await quizasResumen(contextoTelegram()).catch((e) => log(`Telegram resumen: ${corto(e, 150)}`))
+
   const altos = encontrados.filter((h) => h.severidad === 'alta').length
   mon.fin(encontrados.length ? `${encontrados.length} hallazgo(s) abiertos${altos ? ` · ${altos} alto(s)` : ''}` : 'Todo en orden')
 }
