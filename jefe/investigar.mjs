@@ -235,14 +235,21 @@ export async function investigar(h, ctx) {
     }
     if (c === 'digitadores:pendientes') return await tecnicosPendientes(h, ctx)
     if (c.startsWith('sku:')) return await skuDistinto(h, ctx)
+    if (c === 'llm:robot_regla') return {
+      causa: 'El robot de Digitadores está pasando LLM a Logística - Envío sin guía "ENVIO" ni Cemaco con OPE-: casi seguro la PC que lo corre tiene una versión vieja del robot',
+      accion: 'En la PC de Digitadores (HPCLPCSZ4): git pull y volver a correr digitadores\\programar-tarea.cmd. Después revisar en CSHP las llamadas de la lista.',
+      evidencia: [ctx.corto(h.detalle, 400)], patrones: [{ patron: 'llm:robot_regla_vieja', robot: 'digitadores', causa: 'Digitadores con regla de envío vieja (pasa LLM a Logística sin regla)', accion: 'git pull en la PC del robot', ejemplo: '' }] }
     if (c.startsWith('llm:')) return logisticaLlm(h, ctx)
     if (c === 'citas:error') return await citasConError(h, ctx)
     if (c === 'citas:atoradas') return await citasAtoradas(h, ctx)
     if (c === 'correos:error') return await correosConError(h, ctx)
     if (c === 'garantias:error') return await garantiasConError(h, ctx)
-    if (c === 'robots:varios') return { causa: /CSHP/.test(h.titulo) ? 'CSHP está caído o muy lento' : 'Varios robots fallan a la vez pero CSHP responde: red o PCs',
-      accion: /CSHP/.test(h.titulo) ? 'Esperar o avisar a sistemas.' : 'Revisar internet de las PCs.', evidencia: [ctx.corto(h.detalle, 200)],
-      patrones: [{ patron: /CSHP/.test(h.titulo) ? 'cshp_caido' : 'varios_robots_red', robot: 'jefe', causa: h.titulo, accion: '', ejemplo: '' }] }
+    if (c === 'robots:varios') {
+      const cshp = /parece ser CSHP/i.test(h.titulo)   // "(CSHP sí responde)" NO es CSHP caído
+      return { causa: cshp ? 'CSHP está caído o muy lento' : 'Varios robots fallan a la vez pero CSHP responde: casi siempre son robots en PCs distintas (apagadas, dormidas o sin internet), no un problema común',
+        accion: cshp ? 'Esperar o avisar a sistemas.' : 'Ver cada robot caído por separado (su PC y su tarea programada).', evidencia: [ctx.corto(h.detalle, 200)],
+        patrones: [{ patron: cshp ? 'cshp_caido' : 'varios_robots_sin_relacion', robot: 'jefe', causa: cshp ? 'CSHP caído' : 'Varios robots caídos a la vez sin que CSHP falle', accion: '', ejemplo: '' }] }
+    }
     if (c === 'cshp:caido') { const r = clasificar(h.detalle); return { causa: `CSHP: ${r.causa}`, accion: r.accion, evidencia: [ctx.corto(h.detalle, 200)], patrones: [{ patron: `cshp:${r.id}`, robot: 'jefe', causa: `CSHP: ${r.causa}`, accion: r.accion, ejemplo: '' }] } }
   } catch (e) {
     return { causa: null, accion: null, evidencia: [`No se pudo investigar: ${ctx.corto(e, 160)}`], patrones: [] }

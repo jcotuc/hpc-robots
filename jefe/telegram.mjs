@@ -7,7 +7,16 @@
  * .env:  TELEGRAM_TOKEN (de @BotFather) · TELEGRAM_CHAT_ID (solo ese chat habla con el Jefe)
  * Chat id:  node --env-file=.env telegram.mjs --chat   (antes escríbele algo al bot)
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs'
+
+/* ── IA local (Ollama): lo que el Jefe no entiende lo deja en cola; cerebro.mjs (tarea aparte) lo piensa y contesta ── */
+export const iaLista = () => Boolean((process.env.OLLAMA_MODEL || '').trim())
+export function encolarIA(tipo, texto, extra = {}) {
+  mkdirSync('cerebro/cola', { recursive: true })
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+  writeFileSync(`cerebro/cola/${id}.json`, JSON.stringify({ id, tipo, texto, creado: new Date().toISOString(), ...extra }))
+  return id
+}
 
 const TOKEN = (process.env.TELEGRAM_TOKEN || '').trim()
 const CHAT = (process.env.TELEGRAM_CHAT_ID || '').trim()
@@ -126,6 +135,11 @@ async function mensaje(m, est, ctx) {
   // reglas
   if (cmd === '/reglas' || /^(mis )?reglas\b/.test(t)) return listarReglas(ctx)
   if (/^\/?regla\b/.test(t) || /→|->|=>/.test(texto) || (/^(cuando|si)\s/.test(t) && /(causa|hacer|nivel)\s*[:=]/.test(t))) return proponerRegla(texto, est, ctx)
+  // instrucciones en lenguaje libre ("no me avises de…", "avísame si…", "ignora…", "que sea crítico…") → regla
+  if (/no me avis|avisame|ignora|silencia|que sea critic|ponle (nivel|prioridad)|subele|bajale|no quiero (ver|que me)|cuando pase/.test(t)) {
+    if (iaLista()) { encolarIA('regla', texto); return enviar('🧠 Entendido, déjame convertir eso en regla y te muestro cómo la entendí <i>(1–3 min)</i>.') }
+    return proponerRegla(texto, est, ctx)
+  }
   // comandos y frases
   if (cmd === '/ayuda' || cmd === '/start' || /^(ayuda|help|que puedes|que sabes hacer|comandos)/.test(t)) return enviar(textoAyuda())
   if (e.llamadas.length) return enviar(await textoLlamada(e.llamadas[0], ctx))
@@ -140,6 +154,10 @@ async function mensaje(m, est, ctx) {
   if (cmd === '/estado' || /estado|como (va|van|esta|estan)|que tal|funciona|trabajando|vivo|caido|corriendo/.test(t) || e.robots.length || e.centros.length) return enviar(await textoEstado(ctx, e))
   if (/^(hola|buen|que onda|hey|saludos)/.test(t)) return enviar(`👑 ¡Hola, Joshua!\n\n${await textoEstado(ctx, e, true)}\n\n<i>Pregúntame lo que quieras o escribe "ayuda".</i>`)
   if (/^(gracias|ok|listo|va|perfecto|excelente|vale|dale)\b/.test(t)) return enviar('👌 A la orden. Sigo vigilando.')
+  if (iaLista()) {
+    encolarIA('pregunta', texto)
+    return enviar('🧠 Déjame pensarlo… <i>(te contesto en 1–3 min)</i>')
+  }
   return enviar(`🤔 No te entendí eso.\n\nPrueba con algo como:\n• <i>cómo va Cobán</i>\n• <i>pendientes de digitadores</i>\n• <i>por qué falló citas</i>\n• <i>LLM21-322408</i>\n• <i>cuando el error diga Outlook → causa: Outlook cerrado → hacer: abrir Outlook</i>\n\nO escribe <b>ayuda</b>.`)
 }
 
@@ -241,7 +259,7 @@ async function textoAprendido(ctx) {
 }
 
 /* ═════════════════ Reglas que enseña Joshua ═════════════════ */
-const NIVEL = { alta: '🚨 crítico', media: '🟡 atención', ignorar: '🔇 ignorar (no avisar)' }
+export const NIVEL = { alta: '🚨 crítico', media: '🟡 atención', ignorar: '🔇 ignorar (no avisar)' }
 function parsearRegla(texto) {
   const r = { robots: [], centros: [], textos: [], desde: null, hasta: null, causa: null, accion: null, nivel: null }
   const limpio = texto.replace(/^\s*\/?regla\s*:?\s*/i, '')
@@ -298,21 +316,29 @@ async function proponerRegla(texto, est, ctx) {
   const falta = []
   if (condicionVacia(r)) falta.push('🤔 No entendí <b>cuándo</b> aplica. Dime un robot, un centro o qué texto dice la alerta (entre comillas).')
   if (!r.causa && !r.accion && !r.nivel) falta.push('🤔 No entendí <b>qué hago</b> cuando pase. Usa <code>causa:</code>, <code>hacer:</code> o <code>nivel: crítico | atención | ignorar</code>.')
+  if (falta.length && iaLista()) {
+    encolarIA('regla', texto)
+    return enviar('🧠 No la entendí a la primera. Déjame pensarla con calma y te digo cómo la entendí <i>(1–3 min)</i>.')
+  }
   if (falta.length) return enviar([`📏 <b>Casi…</b>`, LINEA, ...falta, '', 'Ejemplo:', '<i>cuando correos diga "Outlook" → causa: Outlook cerrado → hacer: abrir Outlook → nivel: atención</i>'].join('\n'))
-  // Prueba: ¿a qué alertas del último mes le habría aplicado?
+  est.reglaPendiente = { ...r, texto, vence: new Date(Date.now() + 2 * 3600e3).toISOString() }
+  const L = await textoPropuestaRegla(r, ctx)
+  L.push('', '¿La guardo?')
+  return enviar(L.join('\n'), [[{ text: '✅ Sí, guárdala', callback_data: 'r+|0' }, { text: '✏️ No, la corrijo', callback_data: 'r-|0' }]])
+}
+/* "Entendí esta regla" + prueba contra las alertas del último mes (lo usa también cerebro.mjs) */
+export async function textoPropuestaRegla(r, ctx, titulo = '📏 <b>Entendí esta regla</b>') {
   const desde = new Date(Date.now() - 30 * 86400000).toISOString()
   const hist = await ctx.q(ctx.KK, `jefe_hallazgos?select=clave,robot,pc,centro,titulo,detalle,causa,abierto_en&abierto_en=gte.${desde}&order=abierto_en.desc&limit=1000`).catch(() => [])
   const aplica = hist.filter((x) => reglaAplica({ cuando: r }, x, 12))   // la hora no se prueba en el historial
-  const L = [`📏 <b>Entendí esta regla</b>`, LINEA, describir(r), '', `🧪 <b>Prueba con el último mes</b> (${hist.length} alertas)`]
+  const L = [titulo, LINEA, describir(r), '', `🧪 <b>Prueba con el último mes</b> (${hist.length} alertas)`]
   if (!aplica.length) L.push('<i>No habría aplicado a ninguna. Puede ser algo nuevo, o que el texto no coincide con cómo escribo las alertas.</i>')
   else {
     L.push(`Habría aplicado a <b>${aplica.length}</b>:`); aplica.slice(0, 3).forEach((x) => L.push(`• <i>${h(ctx.corto(x.titulo, 90))}</i>`))
     if (hist.length > 10 && aplica.length / hist.length > 0.4) L.push(`⚠️ <b>Ojo:</b> es muy general (${Math.round(100 * aplica.length / hist.length)}% de todas las alertas).`)
   }
   if (r.nivel === 'ignorar' && aplica.some((x) => /caido|error|cshp/.test(x.clave))) L.push('⚠️ <b>Ojo:</b> ignorarías alertas de robots caídos o con error.')
-  est.reglaPendiente = { ...r, texto, vence: new Date(Date.now() + 2 * 3600e3).toISOString() }
-  L.push('', '¿La guardo?')
-  return enviar(L.join('\n'), [[{ text: '✅ Sí, guárdala', callback_data: 'r+|0' }, { text: '✏️ No, la corrijo', callback_data: 'r-|0' }]])
+  return L
 }
 export async function cargarReglas(ctx) { return ctx.q(ctx.KK, 'jefe_reglas?select=*&activa=eq.true&order=id').catch(() => []) }
 async function listarReglas(ctx) {
@@ -336,6 +362,17 @@ async function boton(cb, est, ctx) {
     ctx.log(`TELEGRAM regla nueva: ${r.texto}`)
     await responder('Guardada ✅')
     return enviar('✅ <b>Regla guardada.</b> La aplico desde mi siguiente ronda.\n<i>Escribe "reglas" para verlas o borrarlas.</i>')
+  }
+  if (acc === 'ri+') {
+    const f = `cerebro/reglas/${String(id).replace(/[^\w-]/g, '')}.json`
+    await quitarBotones()
+    if (!existsSync(f)) return responder('Ya no tengo esa regla, escríbela otra vez')
+    const r = JSON.parse(readFileSync(f, 'utf8')); try { unlinkSync(f) } catch {}
+    await ctx.q(ctx.KK, 'jefe_reglas', { method: 'POST', prefer: 'return=minimal', body: {
+      cuando: { robots: r.robots, centros: r.centros, textos: r.textos, desde: r.desde, hasta: r.hasta }, causa: r.causa, accion: r.accion, nivel: r.nivel, texto: r.texto } })
+    ctx.log(`TELEGRAM regla nueva (IA): ${r.texto}`)
+    await responder('Guardada ✅')
+    return enviar('✅ <b>Regla guardada.</b> La aplico desde mi siguiente ronda.')
   }
   if (acc === 'r-') { est.reglaPendiente = null; await quitarBotones(); await responder('OK'); return enviar('✏️ Va, escríbemela de nuevo con los cambios.') }
   if (acc === 'rb') {

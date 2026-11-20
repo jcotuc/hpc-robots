@@ -19,3 +19,5 @@ centros-dungeon.json
 
 # Jefe: estado local de Telegram (offset, silencios)
 telegram-estado.json
+# Jefe: cola y reglas propuestas por la IA local
+jefe/cerebro/

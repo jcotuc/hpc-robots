@@ -44,6 +44,8 @@ const HORARIOS = {
 const NOMBRES = { citas: 'Citas', guias: 'Guías', digitadores: 'Digitadores', correos: 'Correos', garantias: 'Garantías', truper: 'Catálogo Truper',
   'solicitud-repuestos': 'Solicitud de repuestos', 'despacho-repuestos': 'Despacho de repuestos', 'auditor-repuestos': 'Auditor de repuestos', kardex: 'Kardex (inventario)' }
 /* Robots que se corren a mano: si no reportan no es falla; solo importa si tienen pendientes esperando */
+/* Robots que corren pocas veces al día: solo están 'caídos' si pasan más de estos minutos sin reportar (kardex: 6:30, 12:30 y 17:30) */
+const LIMITE_MIN = { kardex: 7 * 60 }
 const MANUALES = ['garantias', 'truper']   // truper: corre solo el día 1 de cada mes (ver revisarTruper)
 const GARANTIA_ESPERA_MIN = Number(E.GARANTIA_ESPERA_MIN || 60)
 
@@ -104,7 +106,7 @@ async function revisarRobots() {
   const out = []
   for (const s of filas.filter((f) => f.robot !== 'jefe')) {
     const n = NOMBRES[s.robot] || s.robot
-    const limite = (s.intervalo_seg || 180) * 2 + 90
+    const limite = LIMITE_MIN[s.robot] ? LIMITE_MIN[s.robot] * 60 : (s.intervalo_seg || 180) * 2 + 90
     const edad = (Date.now() - new Date(s.last_seen).getTime()) / 1000
     const m = minEnHorario(s.robot)
     const carga = CARGA[`${s.robot}@${s.centro}`] ?? CARGA[s.robot]   // digitadores: carga de su centro
