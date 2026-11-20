@@ -16,3 +16,6 @@ centros-dungeon.json
 
 # Pausa general mientras corre Kardex
 .pausa-kardex
+
+# Jefe: estado local de Telegram (offset, silencios)
+telegram-estado.json

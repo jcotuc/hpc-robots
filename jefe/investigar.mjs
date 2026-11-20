@@ -259,7 +259,9 @@ export function recordar(patrones, memoria, ctx) {
     const horas = Object.entries(m.horas || {}).sort((a, b) => b[1] - a[1])
     const hora = horas[0] && horas[0][1] >= 2 ? ` · suele pasar a las ${horas[0][0]} h` : ''
     const res = m.resueltos ? ` · se resuelve en ~${Math.round(m.minutos_resolver / m.resueltos)} min` : ''
-    notas.push(`${m.veces >= 3 ? 'RECURRENTE: ' : ''}ya pasó ${m.veces} vez/veces (desde ${new Date(m.primera).toLocaleDateString('es-GT', { timeZone: 'America/Guatemala' })})${hora}${res} — ${m.causa}`)
+    const votos = (m.confirmadas || 0) + (m.rechazadas || 0)
+    const conf = votos ? ` · confianza ${Math.round(100 * (m.confirmadas || 0) / votos)}% (${votos} voto/s)` : ''
+    notas.push(`${m.veces >= 3 ? 'RECURRENTE: ' : ''}ya pasó ${m.veces} vez/veces (desde ${new Date(m.primera).toLocaleDateString('es-GT', { timeZone: 'America/Guatemala' })})${hora}${res}${conf} — ${m.causa_joshua ? `según Joshua: ${m.causa_joshua}` : m.causa}`)
   }
   return notas
 }

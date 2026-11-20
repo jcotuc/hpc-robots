@@ -11,6 +11,7 @@ import { crearMonitor } from '../shared/monitor.mjs'
 import { mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { abrirCSHP, cerrarCSHP, leerLlamada, cshpResponde, pendientesGuias } from './cshp.mjs'
 import { investigar, recordar } from './investigar.mjs'
+import { telegramListo, alertaCritica, quizasResumen, procesarMensajes } from './telegram.mjs'
 import { salirSiKardex } from '../shared/kardex-pausa.mjs'
 await salirSiKardex('jefe')   // pausa mientras Kardex actualiza inventario en esta PC
 
@@ -149,7 +150,7 @@ async function revisarCitas() {
 async function revisarCorreos() {
   const out = []
   const errores = await q(CC, 'correos_cola?select=tipo,referencia,ultimo_error&estado=eq.error&order=created_at.desc&limit=50')
-  if (errores.length) out.push({ clave: 'correos:error', robot: 'correos', severidad: 'alta',
+  if (errores.length) out.push({ clave: 'correos:error', robot: 'correos', severidad: errores.length >= 10 ? 'alta' : 'media',
     titulo: `${errores.length} correo(s) que no se pudieron enviar`,
     detalle: errores.slice(0, 10).map((c) => `${c.tipo} ${c.referencia || ''}: ${corto(c.ultimo_error, 100)}`).join(' · ') })
   const lim = MIN('CORREO_ATRASADO_MIN', 15)
@@ -201,11 +202,11 @@ async function revisarSku() {
     const num = a.num_llamada.toUpperCase(), motivo = a.pendiente_motivo || ''
     const skuCshp = (motivo.match(/CSHP (\d+)/) || [])[1], skuForm = String(a.producto_sku || '').trim()
     if (ordenes.some((o) => o.num_llamada.toUpperCase() === num)) continue   // ya tiene orden: la ejecuta Digitadores
-    const avisar = (titulo, detalle) => out.push({ clave: `sku:${num}`, robot: 'digitadores', severidad: 'alta', titulo, detalle })
+    const avisar = (titulo, detalle, sev = 'alta') => out.push({ clave: `sku:${num}`, robot: 'digitadores', severidad: sev, titulo, detalle })
     if (/ya est[aá]|facturad/i.test(motivo)) { avisar(`${num}: SKU distinto y la llamada ya está facturada`, `${corto(motivo, 300)}. El Jefe no la toca: decidir a mano.`); continue }
-    if (!skuCshp || !/^\d+$/.test(skuForm)) { avisar(`${num}: SKU del formulario no es un código`, `Formulario "${skuForm}", CSHP ${skuCshp || '?'}. Revisar a mano.`); continue }
+    if (!skuCshp || !/^\d+$/.test(skuForm)) { avisar(`${num}: SKU del formulario no es un código`, `Formulario "${skuForm}", CSHP ${skuCshp || '?'}. Revisar a mano.`, 'media'); continue }
     const [cf, cc] = [await categoriaDeSku(skuForm), await categoriaDeSku(skuCshp)]
-    if (!cf || !cc || !cf.familia || !cc.familia) { avisar(`${num}: SKU sin categoría en el catálogo`, `Formulario ${skuForm} (${desc(cf)}), CSHP ${skuCshp} (${desc(cc)}). Agregar al catálogo o decidir a mano.`); continue }
+    if (!cf || !cc || !cf.familia || !cc.familia) { avisar(`${num}: SKU sin categoría en el catálogo`, `Formulario ${skuForm} (${desc(cf)}), CSHP ${skuCshp} (${desc(cc)}). Agregar al catálogo o decidir a mano.`, 'media'); continue }
     if (normalizar(cf.familia) !== normalizar(cc.familia)) { avisar(`${num}: SKU de otra familia`, `Formulario ${skuForm} (${desc(cf)}) vs CSHP ${skuCshp} (${desc(cc)}). Producto distinto: confirmar con el técnico.`); continue }
     // Misma familia → orden a Digitadores
     out.push({ orden: { num_llamada: num, accion: 'cambiar_sku', sku_nuevo: skuForm, sku_cshp: skuCshp, motivo: `Misma familia ${cf.familia}: ${desc(cc)} → ${desc(cf)}` } })
@@ -257,20 +258,29 @@ async function revisarCshp() {
     }
     if (PROD) writeFileSync(AUD, JSON.stringify(aud, null, 1))
   }
-  // hallazgos de todas las que siguen en alerta (se cierran cuando una nueva revisión sale bien)
-  for (const [n, a] of Object.entries(aud)) {
-    if (a.estado !== 'alerta') continue
-    const titulo = a.debe && !a.paso ? `${n} debía pasar a Logística - Envío y quedó en "${a.status}"`
-      : !a.debe && a.paso ? (a.robot ? `${n}: el robot la pasó a Logística - Envío sin ser envío ni Cemaco`
-                                     : `${n}: Digitadores la dejó en Facturación, pero alguien la pasó a Logística - Envío`)
-      : `${n}: señal de Cemaco incompleta (${a.razon})`
-    const porque = !a.debe && a.paso && !a.robot ? ' ¿Es un envío que el robot no reconoce (falta una regla) o se movió por error?' : ''
-    out.push({ clave: `llm:${n}`, robot: 'digitadores', severidad: a.debe !== a.paso ? 'alta' : 'media', titulo,
-      detalle: `CSHP ${horaGT(a.revisada)}: ${a.campos || a.razon}. Status: ${a.status || '?'}.${a.logistica ? ` Cambio a Logística: ${a.logistica}.` : ''}${porque}` })
-  }
+  // Ya NO se abre una alerta por llamada (era el 70% del ruido): todo va al resumen de Logística (7:00 y 18:00).
+  // Solo es crítico si el ROBOT pasó a Logística algo que no debía (posible error en su regla): UNA alerta agrupada.
+  const malRobot = Object.entries(aud).filter(([, a]) => a.estado === 'alerta' && !a.debe && a.paso && a.robot && Date.now() - new Date(a.revisada).getTime() < 3 * 86400000)
+  if (malRobot.length) out.push({ clave: 'llm:robot_regla', robot: 'digitadores', severidad: 'alta',
+    titulo: `Digitadores pasó ${malRobot.length} LLM a Logística - Envío sin regla (ni envío ni Cemaco)`,
+    detalle: malRobot.slice(0, 6).map(([n, a]) => `${n}: ${a.campos || a.razon}`).join(' · ') + '. Revisar la versión del robot en la PC que lo corre (git pull) y su regla de envío.' })
   // limpiar auditadas viejas (> 7 días)
   for (const [n, a] of Object.entries(aud)) if (a.estado === 'ok' && Date.now() - new Date(a.revisada).getTime() > 7 * 86400000) delete aud[n]
   return out
+}
+
+/* Resumen de Logística - Envío del día (va en el resumen de Telegram, ya no como alertas sueltas) */
+function resumenLogistica() {
+  const hoy = fechaGT(), del = Object.entries(leerAud()).filter(([, a]) => a.estado === 'alerta' && a.revisada && new Date(a.revisada).toLocaleDateString('en-CA', { timeZone: 'America/Guatemala' }) === hoy)
+  if (!del.length) return ''
+  const persona = del.filter(([, a]) => !a.debe && a.paso && !a.robot), robot = del.filter(([, a]) => !a.debe && a.paso && a.robot), falto = del.filter(([, a]) => a.debe && !a.paso)
+  const quien = {}
+  for (const [, a] of persona) { const u = (String(a.logistica || '').split(' · ').pop() || '?').trim(); quien[u] = (quien[u] || 0) + 1 }
+  const L = ['<b>Logística - Envío (auditoría LLM)</b>']
+  if (persona.length) L.push(`• ${persona.length} pasadas a mano sin ser envío/Cemaco: ${Object.entries(quien).sort((a, b) => b[1] - a[1]).map(([u, n]) => `${u} (${n})`).join(', ')}`)
+  if (robot.length) L.push(`• 🚨 ${robot.length} pasadas por el ROBOT sin regla`)
+  if (falto.length) L.push(`• ${falto.length} debían ir a Logística y no fueron: ${falto.slice(0, 5).map(([n]) => n).join(', ')}`)
+  return L.join('\n')
 }
 
 async function revisarCarga() {
@@ -377,8 +387,11 @@ async function revisarGarantias() {
 const REVISIONES = { cshp: revisarCshp, carga: revisarCarga, garantias: revisarGarantias, truper: revisarTruper, robots: revisarRobots, citas: revisarCitas, correos: revisarCorreos, digitadores: revisarDigitadores, sku: revisarSku }
 
 /* =============== Hallazgos: abrir / actualizar / cerrar =============== */
-async function avisar(h, abierto) {
-  if (!PROD || !ALERTAR_A.length || h.severidad !== 'alta') return false
+async function avisar(h, abierto, id = null) {
+  if (!PROD || h.severidad !== 'alta') return false
+  if (cshpCaido && /^(error|caido):/.test(h.clave) && h.clave !== 'cshp:caido') return false   // ya se avisó 'CSHP no responde'
+  if (telegramListo()) return id ? alertaCritica(h, id).catch((e) => { log(`Telegram: ${corto(e, 150)}`); return false }) : false
+  if (!ALERTAR_A.length) return false
   if (cshpCaido && /^(error|caido):/.test(h.clave)) return false   // ya se avisó 'CSHP no responde'
   const html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#111827">
     <div style="background:#b91c1c;color:#fff;padding:10px 16px;font-weight:600">JEFE DEL DUNGEON · ALERTA</div>
@@ -410,7 +423,8 @@ async function main() {
   const ordenes = encontrados.filter((x) => x.orden).map((x) => x.orden)
   encontrados.splice(0, encontrados.length, ...encontrados.filter((x) => !x.orden))
   ordenes.forEach((o) => log(`ORDEN ${o.accion} ${o.num_llamada}: ${o.sku_cshp} → ${o.sku_nuevo} (${o.motivo})`))
-  encontrados.forEach((h) => log(`${h.severidad === 'alta' ? 'ALTA ' : 'MEDIA'} ${h.titulo} — ${h.detalle || ''}`))
+  if (PROD) log(`HALLAZGOS ${encontrados.length} (${encontrados.filter((h) => h.severidad === 'alta').length} críticos)`)
+  else encontrados.forEach((h) => log(`${h.severidad === 'alta' ? 'ALTA ' : 'MEDIA'} ${h.titulo} — ${h.detalle || ''}`))
   if (!encontrados.length && !ordenes.length) log('Todo en orden.')
 
   // ── Investigar: causa, evidencia y qué hacer (solo hallazgos nuevos, sin causa o que cambiaron) ──
@@ -427,6 +441,8 @@ async function main() {
     h.causa = inv.causa; h.accion = inv.accion; h.evidencia = (inv.evidencia || []).filter(Boolean).join('\n')
     h.patrones = (inv.patrones || []).map((p) => p.patron)
     h.aprendido = recordar(inv.patrones || [], memoria).join('\n')
+    const enseñada = (inv.patrones || []).map((p) => memoria.get(p.patron)).find((m) => m?.causa_joshua)
+    if (enseñada) { h.causa = `${enseñada.causa_joshua} (me lo enseñó Joshua)`; if (enseñada.accion_joshua) h.accion = enseñada.accion_joshua }
     h.investigado = true
     for (const p of inv.patrones || []) if (!(ya?.patrones || []).includes(p.patron)) aprender.set(p.patron, p)
     log(`   CAUSA ${h.clave}: ${h.causa || '?'}${h.accion ? ` → ${h.accion}` : ''}`)
@@ -460,13 +476,14 @@ async function main() {
       ...(h.investigado ? { causa: h.causa || null, accion: h.accion || null, evidencia: h.evidencia || null, aprendido: h.aprendido || null,
         patrones: [...new Set([...(ya?.patrones || []), ...(h.patrones || [])])], investigado_en: ahora } : {}) }
     if (ya) {
-      if (!ya.avisado_en && await avisar(h, ya.abierto_en).catch(() => false)) datos.avisado_en = ahora
+      if (!ya.avisado_en && await avisar({ ...h, causa: h.causa || ya.causa }, ya.abierto_en, ya.id).catch(() => false)) datos.avisado_en = ahora
       await q(KK, `jefe_hallazgos?id=eq.${ya.id}`, { method: 'PATCH', body: datos, prefer: 'return=minimal' })
     } else {
-      const avisado = await avisar(h, ahora).catch((e) => { log(`No se pudo encolar el correo: ${corto(e)}`); return false })
-      await q(KK, 'jefe_hallazgos', { method: 'POST', prefer: 'return=minimal', body: { ...datos, clave: h.clave, abierto_en: ahora, ...(avisado ? { avisado_en: ahora } : {}) } })
+      const fila = (await q(KK, 'jefe_hallazgos', { method: 'POST', prefer: 'return=representation', body: { ...datos, clave: h.clave, abierto_en: ahora } }))?.[0]
+      const avisado = fila ? await avisar(h, ahora, fila.id).catch((e) => { log(`No se pudo avisar: ${corto(e)}`); return false }) : false
+      if (avisado) await q(KK, `jefe_hallazgos?id=eq.${fila.id}`, { method: 'PATCH', body: { avisado_en: ahora }, prefer: 'return=minimal' }).catch(() => {})
       mon.revisar(null, `Nuevo: ${h.titulo}`)
-      log(`ABIERTO ${h.clave}${avisado ? ' (correo encolado)' : ''}`)
+      log(`ABIERTO ${h.clave}${avisado ? (telegramListo() ? ' (Telegram)' : ' (correo encolado)') : ''}`)
     }
   }
   // se cierran solo los que ya no aparecen Y cuya revisión sí corrió (si una revisión falló, no se cierra lo suyo)
@@ -486,6 +503,21 @@ async function main() {
     }
     mon.ok(null, `Resuelto: ${a.clave}`)
     log(`CERRADO ${a.clave}`)
+  }
+  if (telegramListo()) {
+    const tctx = { q, KK, NOMBRES, corto, log, resumenLogistica,
+      calificar: async (patron, bien) => {
+        const m = (await q(KK, `jefe_aprendizaje?select=confirmadas,rechazadas&patron=eq.${encodeURIComponent(patron)}`))[0]; if (!m) return
+        await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal',
+          body: bien ? { confirmadas: (m.confirmadas || 0) + 1 } : { rechazadas: (m.rechazadas || 0) + 1 } })
+        log(`TELEGRAM ${bien ? 'confirmó' : 'rechazó'} la causa de ${patron}`)
+      },
+      enseñar: async (patron, causa, accion) => {
+        await q(KK, `jefe_aprendizaje?patron=eq.${encodeURIComponent(patron)}`, { method: 'PATCH', prefer: 'return=minimal', body: { causa_joshua: causa, ...(accion ? { accion_joshua: accion } : {}) } })
+        log(`TELEGRAM aprendió de Joshua para ${patron}: ${causa}`)
+      } }
+    await procesarMensajes(tctx).catch((e) => log(`Telegram: ${corto(e, 150)}`))
+    await quizasResumen(tctx).catch((e) => log(`Telegram resumen: ${corto(e, 150)}`))
   }
   const altos = encontrados.filter((h) => h.severidad === 'alta').length
   mon.fin(encontrados.length ? `${encontrados.length} hallazgo(s) abiertos${altos ? ` · ${altos} alto(s)` : ''}` : 'Todo en orden')

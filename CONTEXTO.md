@@ -96,3 +96,9 @@ Robots manuales en `MANUALES` de `revisar.mjs` (garantias, truper): no se marcan
 Toda tarea programada corre `wscript.exe //B //Nologo "<carpeta>\correr-oculto.vbs"` (abre `correr.cmd` oculto y espera a que termine; copiar el .vbs de `jefe\`).
 `correr.cmd` nunca lleva `pause` (oculto se quedaría esperando para siempre). Excepción: robots que se corren a mano con doble clic (garantias) se ven, para leer el resultado.
 Robot nuevo = `correr.cmd` + `correr-oculto.vbs` + `programar-tarea` que use el .vbs. Después de cambiarlo, volver a correr su `programar-tarea` en la PC.
+
+## Jefe en Telegram (`jefe\telegram.mjs`)
+- `.env` del Jefe: `TELEGRAM_TOKEN` (de @BotFather) y `TELEGRAM_CHAT_ID` (solo ese chat habla con el Jefe; `node --env-file=.env telegram.mjs --chat` lo muestra). Con Telegram configurado el Jefe YA NO manda correos.
+- Solo lo crítico (severidad `alta`) llega al momento, con botones Visto / Silenciar 24 h / ✅ causa correcta / ❌ no fue eso (→ Joshua escribe la causa real y queda en `jefe_aprendizaje.causa_joshua`, que el Jefe usa desde entonces).
+- Resumen 7:00 y 18:00 (L–S) con trabajo del día, pendientes, alertas y Logística. Comandos /estado /alertas /hoy /aprendido; se contestan en la siguiente vuelta (≤3 min).
+- Auditoría LLM a Logística: ya no abre una alerta por llamada; va al resumen. Solo `llm:robot_regla` (el ROBOT pasó sin regla) es crítica.
