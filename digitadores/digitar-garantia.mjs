@@ -553,13 +553,25 @@ async function escribirResolucion(page, d) {
     await page.waitForTimeout(1_000)
     await revisarError(page, `SKU ${d.skuNuevo}`)
   }
+  // PARCHE-RESOLUCION: primero la tipología (su postback puede borrar el cuadro de texto),
+  // luego la Resolución, y se verifica antes y después de Aceptar.
+  d.tipologiaCSHP = await ponerTipologia(page, d.tipologia)
   const txt = page.locator('#FrmLLamadasServ_TxtResolucion')
   await txt.waitFor({ state: 'visible', timeout: 15_000 })
-  await txt.fill(d.resolucion)
-  d.tipologiaCSHP = await ponerTipologia(page, d.tipologia)
+  const limpio = (t) => String(t || '').replace(/\s+/g, ' ').trim()
+  for (let intento = 1; intento <= 3; intento++) {
+    await txt.fill(d.resolucion)
+    await txt.press('Tab').catch(() => {})
+    await esperarCSHP(page)
+    if (limpio(await txt.inputValue().catch(() => '')) === limpio(d.resolucion)) break
+    if (intento === 3) throw new Error('No se pudo escribir la Resolución en CSHP (el cuadro quedó distinto o vacío)')
+  }
   await clic(page, '#FrmLLamadasServ_CmdAceptar')
   await esperarCSHP(page)
   await revisarError(page, 'Modificar')
+  const guardada = limpio(await page.locator('#FrmLLamadasServ_TxtResolucion').inputValue({ timeout: 5_000 }).catch(() => ''))
+  if (!guardada) throw new Error('CSHP no guardó la Resolución (quedó vacía después de Aceptar)')
+  if (guardada.slice(0, 40) !== limpio(d.resolucion).slice(0, 40)) throw new Error('La Resolución guardada en CSHP no es la del robot')
   if (d.skuNuevo) {
     const quedo = await skuCSHP(page)
     if (quedo && quedo.replace(/^0+/, '') !== d.skuNuevo.replace(/^0+/, '')) throw new Error(`CSHP no guardó el SKU ${d.skuNuevo} (quedó ${quedo})`)
@@ -696,6 +708,23 @@ async function procesar(page, a) {
   log(`   ↳ ${d.tecnico}${d.otroCentro ? ' (catálogo de otro centro)' : ''} · ${d.tipo} → tipología ${d.tipologia}${d.revisado ? ' · diagnóstico revisado por digitador' : ''}${destino !== numero ? ` · CSHP QA: ${destino}` : ''}`)
 
   await abrirLlamada(page, destino)
+  // El centro de servicio de la Bandeja debe ser el mismo de la llamada en CSHP; si no, el número
+  // de llamada es de otro centro (mal escrito) y queda pendiente sin tocar CSHP.
+  if (!PRUEBA && a.llamadas_centros?.nombre) {
+    const centroCSHP = await page.locator('#FrmLLamadasServ_CmbCentro')
+      .evaluate((s) => s.options[s.selectedIndex]?.text || '').catch(() => '')
+    // Mismo centro con distinto nombre en la Bandeja y en CSHP
+    const ALIAS = { quetzaltenango: 'xela', 'guate z5': 'zona 5', 'zona 6 nodus': 'zona 6', nodus: 'zona 6' }
+    const base = (t) => { const b = normalizar(t).replace(/^centro de servicio\s*/, '').replace(/\s+/g, ' ').trim(); return ALIAS[b] || b }
+    if (centroCSHP && base(centroCSHP) !== base(a.llamadas_centros.nombre)) {
+      const motivo = `El centro no coincide (Bandeja: ${a.llamadas_centros.nombre}, CSHP: ${centroCSHP}): revisar el número de llamada con ${await quienSubio(a)}. No se cambió nada en CSHP`
+      await dejarPendiente(a, motivo)
+      anotar(destino, 'pendiente', { estado: 'pendiente', motivo })
+      log(`   ⏸️  ${numero}: ${motivo}`)
+      resumen(`${numero}  PENDIENTE  ${motivo}`)
+      return 'pendiente'
+    }
+  }
   // El SKU de la Bandeja debe coincidir con el de CSHP; si no, casi seguro el número de llamada está mal escrito
   const sku = await skuCSHP(page)
   if (!PRUEBA && a.producto_sku && sku && sku.replace(/^0+/, '') !== String(a.producto_sku).trim().replace(/^0+/, '')) {
