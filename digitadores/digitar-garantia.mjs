@@ -28,6 +28,7 @@ import { crearMonitor } from '../shared/monitor.mjs'
 import { hostname } from 'node:os'
 import { mkdirSync, readFileSync, writeFileSync, appendFileSync, openSync, closeSync, unlinkSync, statSync } from 'node:fs'
 import { salirSiKardex } from '../shared/kardex-pausa.mjs'
+import { leerLlamadaCSHP } from '../shared/cshp-llamada.mjs'
 await salirSiKardex('digitadores')   // pausa mientras Kardex actualiza inventario en esta PC
 
 // ─── Configuración ───────────────────────────────────────────────────────────
@@ -683,7 +684,14 @@ async function datosFactura(page) {
 
 // PARCHE-FACTURAR: el botón tiene que existir y CSHP tiene que confirmar la facturación
 // (aviso "Se registro facturación" o un T - Pend. Entrega nuevo en el log). Si no, error y se detiene.
+/** true solo si se encontró la tabla "Repuestos Registrados" y está vacía (sin repuestos CSHP no genera factura) */
+async function sinRepuestos(page) {
+  const ll = await leerLlamadaCSHP(page).catch(() => null)
+  return Array.isArray(ll?.registrados) && ll.registrados.length === 0
+}
+
 async function facturar(page, numero, tecnico) {
+  const sinRep = await sinRepuestos(page)
   // Si ya tiene Caja/Transacción, ya está facturada: nunca se factura dos veces
   const previa = await datosFactura(page)
   if (previa) {
@@ -714,6 +722,8 @@ async function facturar(page, numero, tecnico) {
     await abrirLlamada(page, numero).catch(() => {})
     st = normalizar(await statusActual(page).catch(() => ''))
     if (st !== normalizar('T - Pend. Entrega')) { await page.waitForTimeout(3_000); continue }
+    // Sin repuestos cargados CSHP no genera Caja/Transacción: basta con que quedó en T - Pend. Entrega
+    if (sinRep) return `${aviso ? aviso + ' · ' : ''}sin repuestos cargados: sin factura`
     factura = await datosFactura(page)
     if (!factura) {
       const doc = await filasLog(page).filter({ hasText: 'T - Pend. Entrega' }).first().innerText({ timeout: 2_000 }).catch(() => '')
@@ -847,6 +857,7 @@ async function procesar(page, a) {
     }
     else if (st0 === normalizar('T - Pend. Entrega') && hechos.includes('facturacion')) {
       if (await datosFactura(page)) desde = 'logistica'
+      else if (await sinRepuestos(page)) { desde = 'logistica'; log('   ↳ En T - Pend. Entrega sin repuestos cargados (no lleva factura)') }
       else {
         // En T - Pend. Entrega sin factura: se regresa a T - Facturación y se vuelve a facturar
         await cambiarStatus(page, ST_FACTURACION, d.tecnico)
@@ -858,7 +869,8 @@ async function procesar(page, a) {
         return 'pendiente'
       }
     }
-    else if (st0 === normalizar('Logística - Envío') && hechos.includes('facturacion')) desde = 'fin'
+    // Ya la avanzó alguien a mano después de Facturación (Logística o Cerrado): solo se marca digitada
+    else if ([normalizar('Logística - Envío'), normalizar('Cerrado')].includes(st0) && hechos.includes('facturacion')) desde = 'fin'
     else {
       const motivo = `Intento anterior a medias (${hechos.join(', ')}) y CSHP está en "${actual || '?'}": revisar a mano`
       await dejarPendiente(a, motivo)
