@@ -94,10 +94,11 @@ export function buscarNotas(texto, k = 3) { return buscarEn(cargar().notas, text
 export const infoCatalogo = () => { const i = cargar(); return { productos: i.n, fecha: i.fecha } }
 
 /* Ficha compacta para la IA (poca memoria de trabajo: solo lo útil) */
-export function ficha(d) {
-  return [`[${d.codigo}] ${d.nombre} · clave ${d.clave} · marca ${d.marca} · categoría ${d.categoria}`,
-    d.specs.length ? `  Especificaciones: ${d.specs.slice(0, 10).join('; ')}` : '', d.caract.length ? `  Características: ${d.caract.slice(0, 5).join('; ')}` : '',
-    d.empaque ? `  Empaque: ${d.empaque}` : '', d.garantia ? `  Garantía: ${d.garantia.slice(0, 120)}` : ''].filter(Boolean).join('\n')
+export function ficha(d, corta = false) {
+  // corta = menos texto para la IA (en CPU, cada palabra del contexto cuesta tiempo)
+  return [`[${d.codigo}] ${d.nombre} · clave ${d.clave} · ${d.marca}`,
+    d.specs.length ? `  Especificaciones: ${d.specs.slice(0, corta ? 7 : 10).join('; ')}` : '', d.caract.length ? `  Características: ${d.caract.slice(0, corta ? 2 : 5).join('; ')}` : '',
+    !corta && d.empaque ? `  Empaque: ${d.empaque}` : '', !corta && d.garantia ? `  Garantía: ${d.garantia.slice(0, 120)}` : ''].filter(Boolean).join('\n')
 }
 
 /* ── Notas que enseña Joshua ── */

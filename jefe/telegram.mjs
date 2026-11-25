@@ -65,10 +65,10 @@ export function mdAHtml(md) {
     .replace(/\n{3,}/g, '\n\n')
 }
 /* Manda el aviso ("pensando…") y deja el trabajo en la cola del cerebro con el id del aviso para editarlo después */
-async function aCerebro(tipo, texto, aviso) {
+async function aCerebro(tipo, texto, aviso, extra = {}) {
   await accion()
   const m = await enviar(aviso).catch(() => null)
-  encolarIA(tipo, texto, { msg: m?.message_id || null })
+  encolarIA(tipo, texto, { msg: m?.message_id || null, ...extra })
 }
 export async function enviar(texto, botones = null, chat = CHAT) {
   return api('sendMessage', { chat_id: chat, text: texto.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true,
@@ -177,7 +177,12 @@ async function mensaje(m, est, ctx) {
     est.libre = true; borrarHistorial()
     return enviar(['🧠 <b>Modo libre (prueba)</b>', LINEA, 'Háblame como quieras. Sé del <b>catálogo Truper</b> (máquinas, especificaciones, comparaciones) y de los <b>robots</b>.',
       'Pienso con la IA local: tardo de 20 s a 1–2 min.', '', '📝 <code>/aprende</code> <i>texto</i> — enséñame algo (lo uso como verdad)', '🔎 <code>investiga</code> <i>LLM21-… o un robot</i> — reviso todo, sin modificar nada', '📋 <code>/notas</code> · <code>/olvida 2</code> — ver / borrar lo que me enseñaste',
-      '🔄 <code>/nuevo</code> — empezar otra plática', '↩️ <code>/normal</code> — volver al modo de siempre'].join('\n'))
+      '⚡ <code>/rapido</code> · 🧠 <code>/profundo</code> — más velocidad o más razonamiento', '🔄 <code>/nuevo</code> — empezar otra plática', '↩️ <code>/normal</code> — volver al modo de siempre'].join('\n'))
+  }
+  if (cmd === '/rapido' || cmd === '/rápido') { est.modo = 'rapido'; return enviar('⚡ <b>Modo rápido</b>: respondo con el modelo chico (más rápido, razona un poco menos).') }
+  if (cmd === '/profundo') {
+    if (!(process.env.OLLAMA_MODEL_CHAT || '').trim()) return enviar('🧠 Para el modo profundo agrega <code>OLLAMA_MODEL_CHAT=qwen2.5:7b</code> al .env.')
+    est.modo = 'profundo'; return enviar('🧠 <b>Modo profundo</b>: uso el modelo grande (razona mejor, tarda más). <code>/rapido</code> para volver.')
   }
   if (cmd === '/normal') { est.libre = false; return enviar('↩️ Modo normal: contesto con mis comandos de siempre. <code>/libre</code> para volver a platicar.') }
   if (cmd === '/nuevo') { borrarHistorial(); return enviar('🔄 Listo, empezamos de cero.') }
@@ -202,7 +207,7 @@ async function mensaje(m, est, ctx) {
     return aCerebro('investiga', que, '🔎 <i>Investigando…</i>\n<i>Bandeja · eventos · logs · CSHP (solo lectura, no toco nada)</i>')
   }
   if (est.libre && !texto.startsWith('/')) {
-    return aCerebro('chat', texto, '🧠 <i>pensando…</i>')
+    return aCerebro('chat', texto, '🧠 <i>pensando…</i>', { modo: est.modo || 'rapido' })
   }
   // reglas
   if (cmd === '/reglas' || /^(mis )?reglas\b/.test(t)) return listarReglas(ctx)
@@ -439,7 +444,7 @@ async function boton(cb, est, ctx) {
     await ok('👌')
     await api('editMessageReplyMarkup', { chat_id: CHAT, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {})
     await enviar(`💬 <i>${h(pregunta)}</i>`)
-    return aCerebro('chat', pregunta, '🧠 <i>pensando…</i>')
+    return aCerebro('chat', pregunta, '🧠 <i>pensando…</i>', { modo: est.modo || 'rapido' })
   }
   if (acc === 'fb+') { await api('editMessageReplyMarkup', { chat_id: CHAT, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {}); return ok('¡Gracias! 👍') }
   if (acc === 'fb-') {

@@ -32,18 +32,31 @@ async function q(db, path) {
 }
 
 /* ── Ollama ── */
-async function pensar(sistema, usuario, json = false, { modelo = MODELO, historia = [], ctx = 4096, max = 500 } = {}) {
-  const t0 = Date.now()
+async function pensar(sistema, usuario, json = false, { modelo = MODELO, historia = [], ctx = 4096, max = 500, alEscribir = null } = {}) {
+  const t0 = Date.now(), vivo = Boolean(alEscribir)
   const r = await fetch(`${OLLAMA}/api/chat`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(300000),
-    body: JSON.stringify({ model: modelo, stream: false, keep_alive: '5m', ...(json ? { format: 'json' } : {}),
+    // keep_alive 20 min: el modelo se queda cargado mientras platicas (cargarlo cuesta 5–15 s cada vez)
+    body: JSON.stringify({ model: modelo, stream: vivo, keep_alive: '20m', ...(json ? { format: 'json' } : {}),
       options: { temperature: 0.2, num_ctx: ctx, num_predict: max },
       messages: [{ role: 'system', content: sistema }, ...historia, { role: 'user', content: usuario }] }),
   })
   if (!r.ok) throw new Error(`Ollama HTTP ${r.status}: ${(await r.text()).slice(0, 150)}`)
-  const j = await r.json()
-  log(`   IA ${modelo}: ${((Date.now() - t0) / 1000).toFixed(0)} s`)
-  return j.message?.content || ''
+  if (!vivo) { const j = await r.json(); log(`   IA ${modelo}: ${((Date.now() - t0) / 1000).toFixed(0)} s`); return j.message?.content || '' }
+  // streaming: se va mostrando en Telegram mientras escribe
+  let texto = '', resto = '', primera = 0
+  const dec = new TextDecoder()
+  for await (const trozo of r.body) {
+    resto += dec.decode(trozo, { stream: true })
+    const lineas = resto.split('\n'); resto = lineas.pop()
+    for (const l of lineas) {
+      if (!l.trim()) continue
+      const j = JSON.parse(l)
+      if (j.message?.content) { texto += j.message.content; if (!primera) primera = Date.now(); alEscribir(texto) }
+    }
+  }
+  log(`   IA ${modelo}: primera palabra ${primera ? ((primera - t0) / 1000).toFixed(0) : '?'} s · total ${((Date.now() - t0) / 1000).toFixed(0)} s`)
+  return texto
 }
 
 /* ── Contexto compacto (la IA local tiene poca memoria de trabajo: solo lo esencial) ── */
@@ -129,21 +142,43 @@ const esSeguimiento = (t) => palabrasCortas(t) <= 6 || /\b(ese|esa|eso|esos|esas
 const palabrasCortas = (t) => String(t).trim().split(/\s+/).length
 const sobreRobots = (t) => /robot|alerta|digitador|citas|guias|correo|garantias|jefe|pendiente|cshp|llamada|bandeja|caido|error/i.test(t.normalize('NFD').replace(/[̀-ͯ]/g, ''))
 
-async function chatLibre(texto) {
+/* Respuesta al instante SIN IA: "¿cuánto pesa la LAGAS-4000?", "potencia de la SOIN-130", "ficha 102236" */
+const DATO = [[/pes[oa]|kg\b/, /peso/i, 'Peso'], [/potencia|watts?|\bhp\b|caballo/, /potencia|watts|\bhp\b|motor/i, 'Potencia'], [/voltaje|volt|110|127|220|alimentaci/, /volt|alimentaci/i, 'Alimentación'],
+  [/medida|dimensi|tamano|tamaño|largo|ancho|alto/, /dimensi|medida|largo|ancho|alto/i, 'Medidas'], [/amper|corriente/, /corriente|amper/i, 'Corriente'], [/presion|psi/, /presi|psi/i, 'Presión'],
+  [/capacidad|tanque|litros/, /capacidad|tanque|litro/i, 'Capacidad'], [/velocidad|rpm|revoluciones/, /velocidad|rpm|r\.p\.m/i, 'Velocidad'], [/garantia/, null, 'Garantía'], [/empaque|caja|piezas/, null, 'Empaque']]
+function respuestaRapida(texto, hist) {
+  const t = texto.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  const exactos = buscarProductos(texto, 3).filter((p) => texto.toUpperCase().includes(p.clave.toUpperCase()) || texto.includes(p.codigo))
+  const p = exactos[0] || (hist.length && esSeguimiento(texto) && hist[hist.length - 1].codigos.length === 1 ? buscarProductos(hist[hist.length - 1].codigos[0], 1)[0] : null)
+  if (!p) return null
+  const datos = DATO.filter(([q]) => q.test(t))
+  if (!datos.length) return /^\s*(ficha|especificaciones|datos|info)\b/.test(t) || t.trim() === p.codigo || t.trim().toUpperCase() === p.clave.toUpperCase() ? { p, lineas: p.specs.slice(0, 12) } : null
+  const lineas = datos.flatMap(([, re, nombre]) => nombre === 'Garantía' ? (p.garantia ? [`Garantía: ${p.garantia}`] : []) : nombre === 'Empaque' ? (p.empaque ? [`Empaque: ${p.empaque}`] : []) : p.specs.filter((x) => re.test(x.split(':')[0])))
+  return { p, lineas, faltan: datos.filter(([, re, n]) => !lineas.some((l) => (re || new RegExp(n, 'i')).test(l.split(':')[0]))).map(([, , n]) => n) }
+}
+
+async function chatLibre(texto, { modelo = MODELO_CHAT, alEscribir = null } = {}) {
   const hist = leerHistorial()
+  const rapida = respuestaRapida(texto, hist)
+  if (rapida) {
+    const { p, lineas, faltan = [] } = rapida
+    const resp = [`**${p.clave}** [${p.codigo}] — ${p.nombre}`, ...lineas.map((l) => `- ${l}`), faltan.length ? `La ficha no trae: ${faltan.join(', ')}.` : ''].filter(Boolean).join('\n')
+    guardarTurno(texto, resp, [p.codigo])
+    return { resp, usados: [p], notas: [], rapida: true }
+  }
   // productos: lo que encuentra el buscador + (si es seguimiento) los de la plática anterior
-  let productos = buscarProductos(texto, 5)
-  const previos = hist.length && esSeguimiento(texto) ? hist[hist.length - 1].codigos.flatMap((c) => buscarProductos(c, 1)) : []
-  productos = [...previos, ...productos.filter((p) => !previos.some((x) => x.codigo === p.codigo))].slice(0, 6)
+  let productos = buscarProductos(texto, 4)
+  const previos = hist.length && esSeguimiento(texto) ? hist[hist.length - 1].codigos.slice(0, 2).flatMap((c) => buscarProductos(c, 1)) : []
+  productos = [...previos, ...productos.filter((p) => !previos.some((x) => x.codigo === p.codigo))].slice(0, 5)
   const notas = buscarNotas(texto, 3)
   const partes = []
   if (notas.length) partes.push('NOTAS DE JOSHUA (son verdad):\n' + notas.map((n) => `- ${n.texto}`).join('\n'))
-  if (productos.length) partes.push('FICHAS DEL CATÁLOGO TRUPER:\n' + productos.map(ficha).join('\n'))
-  const docs = buscarDocs(texto, sobreRobots(texto) ? 3 : 2)
+  if (productos.length) partes.push('FICHAS DEL CATÁLOGO TRUPER:\n' + productos.map((p) => ficha(p, true)).join('\n'))
+  const docs = sobreRobots(texto) || !productos.length ? buscarDocs(texto, 2) : []   // documentación solo si hace falta (menos texto = más rápido)
   if (docs.length) partes.push('DOCUMENTACIÓN DE LOS ROBOTS:\n' + docs.map((d) => `[${d.nombre}]\n${d.texto}`).join('\n'))
   if (sobreRobots(texto)) partes.push('DATOS DE LOS ROBOTS:\n' + await contexto())
-  const historia = hist.slice(-3).flatMap((t) => [{ role: 'user', content: t.pregunta }, { role: 'assistant', content: t.respuesta }])
-  const resp = (await pensar(SISTEMA_CHAT, `${partes.join('\n\n')}\n\nPREGUNTA DE JOSHUA: ${texto}`, false, { modelo: MODELO_CHAT, historia, ctx: 6144, max: 600 })).trim()
+  const historia = hist.slice(-2).flatMap((t) => [{ role: 'user', content: t.pregunta }, { role: 'assistant', content: t.respuesta.slice(0, 400) }])
+  const resp = (await pensar(SISTEMA_CHAT, `${partes.join('\n\n')}\n\nPREGUNTA DE JOSHUA: ${texto}`, false, { modelo, historia, ctx: 4096, max: 400, alEscribir })).trim()
   const usados = productos.filter((p) => resp.includes(p.codigo) || resp.toLowerCase().includes(p.clave.toLowerCase())).slice(0, 4)
   guardarTurno(texto, resp, (usados.length ? usados : productos.slice(0, 2)).map((p) => p.codigo))
   return { resp, usados, notas }
@@ -235,9 +270,9 @@ async function responder(texto, botones = null) {
 }
 async function avance(texto) { if (ITEM?.msg) await editar(ITEM.msg, texto).catch(() => {}) }
 /* "escribiendo…" en Telegram mientras la IA piensa, y el aviso cuenta los segundos */
-async function conEscribiendo(etiqueta, fn) {
+async function conEscribiendo(etiqueta, fn, yaEscribe = () => false) {
   const t0 = Date.now()
-  const tic = setInterval(() => { accion(); avance(`${etiqueta} <i>${Math.round((Date.now() - t0) / 1000)} s</i>`) }, 6000)
+  const tic = setInterval(() => { accion(); if (!yaEscribe()) avance(`${etiqueta} <i>${Math.round((Date.now() - t0) / 1000)} s</i>`) }, 5000)
   accion()
   try { return await fn() } finally { clearInterval(tic) }
 }
@@ -270,7 +305,15 @@ async function procesar(item) {
   }
   if (item.tipo === 'chat') {
     await avance('🔎 <i>Buscando en el catálogo y en lo que sé…</i>')
-    const { resp, usados, notas } = await conEscribiendo('🧠 <i>Pensando…</i>', () => chatLibre(item.texto))
+    const modelo = item.modo === 'profundo' ? MODELO_CHAT : MODELO
+    // texto en vivo: se edita el mensaje cada ~1.5 s mientras la IA escribe
+    let ultimo = 0, escribiendo = false
+    const alEscribir = (parcial) => {
+      escribiendo = true
+      if (Date.now() - ultimo < 1500) return
+      ultimo = Date.now(); avance(`${h(parcial)} ▌`)
+    }
+    const { resp, usados, notas } = await conEscribiendo('🧠 <i>Pensando…</i>', () => chatLibre(item.texto, { modelo, alEscribir }), () => escribiendo)
     const pie = [usados.length ? '📦 ' + usados.map((p) => `<a href="${h(p.pagina)}">${h(p.clave)}</a>`).join(' · ') : '', notas.length ? `🧠 usé ${notas.length} nota(s) tuya(s)` : ''].filter(Boolean).join('\n')
     return responder(`${mdAHtml(resp)}${pie ? `\n\n<i>${pie}</i>` : ''}`, botonesDe(item.texto, sugerir(item.texto, usados), usados))
   }
