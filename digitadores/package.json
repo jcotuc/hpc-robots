@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Robot de digitadores: digita en CSHP las llamadas en estado Garantía de la Bandeja (ConsumosCS)",
   "scripts": {
+    "estado": "node --env-file=.env estado.mjs",
     "listar": "node --env-file=.env digitar-garantia.mjs --qa --solo-listar",
     "listar:prod": "node --env-file=.env digitar-garantia.mjs --prod --solo-listar",
     "qa": "node --env-file=.env digitar-garantia.mjs --qa --lento",

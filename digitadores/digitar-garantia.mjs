@@ -674,31 +674,54 @@ async function cambiarStatus(page, codigo, observaciones = null) {
   throw new Error(`Cambio a status ${codigo}: CSHP no lo registró y la ventana sigue abierta`)
 }
 
+/** Factura de la llamada: Caja + Transacción (p. ej. HP204 / 155970). Vacíos = NO facturada */
+async function datosFactura(page) {
+  const caja = (await page.locator('#FrmLLamadasServ_TxtCaja').inputValue({ timeout: 3_000 }).catch(() => '')).trim()
+  const trans = (await page.locator('#FrmLLamadasServ_TxtTransaccion').inputValue({ timeout: 3_000 }).catch(() => '')).trim()
+  return caja && trans ? `${caja}-${trans}` : ''
+}
+
 // PARCHE-FACTURAR: el botón tiene que existir y CSHP tiene que confirmar la facturación
 // (aviso "Se registro facturación" o un T - Pend. Entrega nuevo en el log). Si no, error y se detiene.
-async function facturar(page) {
+async function facturar(page, numero) {
+  // Si ya tiene Caja/Transacción, ya está facturada: nunca se factura dos veces
+  const previa = await datosFactura(page)
+  if (previa) {
+    // Tiene factura pero sigue en T - Facturación: NO se presiona Facturar otra vez (evita doble factura)
+    throw new Error(`Tiene factura ${previa} pero CSHP no la pasó a T - Pend. Entrega: se deja en T - Facturación y se reintenta`)
+  }
   const boton = page.locator('#FrmLLamadasServ_CmdFacturar')
   if (!(await boton.waitFor({ state: 'visible', timeout: 20_000 }).then(() => true).catch(() => false))) {
     throw new Error('CSHP no muestra el botón Facturar: la llamada NO se facturó')
   }
-  const antes = await vecesEnLog(page, 'T - Pend. Entrega')
   const avisos = []
   const alAviso = (dialog) => { avisos.push(dialog.message()); dialog.accept().catch(() => {}) }
   page.on('dialog', alAviso)
   try {
     await boton.click({ timeout: 10_000 })
     await esperarCSHP(page)
-    // Espera hasta 30 s el aviso de CSHP o el renglón nuevo en el log
-    for (let i = 0; i < 30 && !avisos.some((t) => /factur/i.test(t)); i++) {
-      if ((await vecesEnLog(page, 'T - Pend. Entrega')) > antes) break
-      await page.waitForTimeout(1_000)
-    }
+    // Al facturar, CSHP saca de la llamada y regresa a la lista. Se espera el aviso hasta 30 s.
+    for (let i = 0; i < 30 && !avisos.some((t) => /factur/i.test(t)); i++) await page.waitForTimeout(1_000)
   } finally { page.off('dialog', alAviso) }
   await revisarError(page, 'Facturar')
   const aviso = avisos.join(' / ')
-  const confirmada = /registr\w* facturaci/i.test(aviso) || (antes >= 0 && (await vecesEnLog(page, 'T - Pend. Entrega')) > antes)
-  if (!confirmada) throw new Error(`CSHP no confirmó la facturación${aviso ? ` (aviso: ${aviso})` : ' (sin aviso)'}`)
-  return aviso
+
+  // Prueba de facturación: se VUELVE A ABRIR la llamada y se exige Caja + Transacción (p. ej. HP204 / 155970)
+  // o el renglón T - Pend. Entrega con el documento (HP204-155970)
+  let factura = ''
+  for (let intento = 1; intento <= 3 && !factura; intento++) {
+    await abrirLlamada(page, numero).catch(() => {})
+    const st = normalizar(await statusActual(page).catch(() => ''))
+    if (st !== normalizar('T - Pend. Entrega')) { await page.waitForTimeout(3_000); continue }
+    factura = await datosFactura(page)
+    if (!factura) {
+      const doc = await filasLog(page).filter({ hasText: 'T - Pend. Entrega' }).first().innerText({ timeout: 2_000 }).catch(() => '')
+      factura = (doc.match(/\b[A-Z]{2}\d{3}-\d+\b/) || [])[0] || ''
+    }
+    if (!factura) await page.waitForTimeout(3_000)
+  }
+  if (!factura) throw new Error(`Facturar no pasó: la llamada sigue sin T - Pend. Entrega/factura, se deja en T - Facturación y se reintenta${aviso ? ` · aviso: ${aviso}` : ''}`)
+  return `${aviso ? aviso + ' · ' : ''}factura ${factura}`
 }
 
 // ─── Proceso de una llamada ──────────────────────────────────────────────────
@@ -808,8 +831,10 @@ async function procesar(page, a) {
   if (reanudar) {
     const st0 = normalizar(actual)
     if (st0 === normalizar('T - En Ruta')) desde = 'inicio' // solo se había escrito la resolución: se rehace todo
-    else if (st0 === normalizar('T - Facturación') && hechos.includes('facturacion')) desde = 'facturar'
-    else if (st0 === normalizar('T - Pend. Entrega') && hechos.includes('facturacion')) desde = 'logistica'
+    else if (st0 === normalizar('T - Facturación') && hechos.includes('facturacion')) {
+      desde = 'facturar' // sigue en T - Facturación: falta que Facturar la pase a T - Pend. Entrega
+    }
+    else if (st0 === normalizar('T - Pend. Entrega') && hechos.includes('facturacion') && await datosFactura(page)) desde = 'logistica'
     else if (st0 === normalizar('Logística - Envío') && hechos.includes('facturacion')) desde = 'fin'
     else {
       const motivo = `Intento anterior a medias (${hechos.join(', ')}) y CSHP está en "${actual || '?'}": revisar a mano`
@@ -849,7 +874,7 @@ async function procesar(page, a) {
   }
 
   if (desde === 'inicio' || desde === 'facturar') {
-  const aviso = await facturar(page)
+  const aviso = await facturar(page, destino)
   anotar(destino, 'facturar', { aviso })
   log(`   ↳ Facturada${aviso ? ` (aviso: ${aviso})` : ''}`)
   }
@@ -965,7 +990,11 @@ async function main() {
         // vuelta desde el paso que falte. Con pasos ya hechos en CSHP se dan hasta 5 intentos.
         const cshpCaido = /net::|ERR_|timeout|timed out|no terminó de abrir|iniciar sesión|Target .*closed|ECONN|socket|503|502|500/i.test(motivo)
         const limite = hechosAntes.length ? MAX_INTENTOS_REANUDAR : MAX_INTENTOS
-        if (errores(n) < limite) {
+        const faltaFacturar = hechosAntes.includes('facturacion') && !hechosAntes.includes('facturar')
+        if (faltaFacturar) {
+          await soltar(a)
+          log(`   ↻ Quedó en T - Facturación sin facturar: se reintenta Facturar en la siguiente vuelta hasta que pase a T - Pend. Entrega (intento ${errores(n)})`)
+        } else if (errores(n) < limite) {
           await soltar(a)
           log(`   ↻ ${hechosAntes.length ? `En CSHP ya se hizo: ${hechosAntes.join(', ')}; se REANUDA` : 'No se cambió nada en CSHP; se reintenta'} en la siguiente vuelta (intento ${errores(n)}/${limite})`)
         } else {
