@@ -172,7 +172,24 @@ async function investigar(texto) {
       let aud = {}; try { aud = JSON.parse(readFileSync('auditadas.json', 'utf8'))[n] || {} } catch {}
       let l = null
       try { cshp ||= await abrirCSHP(CSHP); l = await leerLlamada(cshp, n); fuentes.add('CSHP (solo lectura)') } catch (e) { partes.push(`CSHP ${n}: no se pudo leer (${corto(e, 100)})`) }
-      partes.push([`LLAMADA ${n}`,
+      // ── Hechos que el Jefe calcula solo (confiables); la IA solo los explica ──
+      const hechos = []
+      const usuariosRobot = [E.CSHP_PROD_USUARIO, E.CSHP_USUARIO, E.CSHP_ROBOT_USUARIOS].join(',').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean)
+      const okDig = evs.find((e) => e.robot === 'digitadores' && e.tipo === 'ok')
+      if (l) {
+        const esLLS = /^LLS/i.test(n), envio = /^ENV[IÍ]O\b/i.test(l.guiaRecep || ''), cemaco = /CEMACO/i.test(l.cliente || ''), ope = /\bOPE-\d/i.test(l.comentario || '')
+        const debe = esLLS || envio || (cemaco && ope)
+        hechos.push(`Regla de envío: ${debe ? 'SÍ debía ir a Logística - Envío' : 'NO debía ir a Logística - Envío'} (${esLLS ? 'es LLS' : envio ? 'guía de recepción ENVIO' : cemaco && ope ? 'Cemaco con OPE-' : `LLM, guía de recepción "${l.guiaRecep || '—'}", cliente ${cemaco ? 'Cemaco' : 'no Cemaco'}, ${ope ? 'con' : 'sin'} OPE-`})`)
+        const quien = (String(l.logistica || '').split(' · ').pop() || '').trim()
+        if (l.pasoPorLogistica) hechos.push(`Sí pasó por Logística - Envío${quien ? `, la movió el usuario "${quien}"` : ''}${quien && usuariosRobot.includes(quien.toLowerCase()) ? ' (ese es el usuario de los ROBOTS, o sea la movió un robot)' : quien ? ' (es una PERSONA, no un robot)' : ''}`)
+        else hechos.push('Nunca pasó por Logística - Envío')
+        if (okDig) hechos.push(`Digitadores la digitó a las ${horaGT(okDig.created_at)} y su reporte ${/log[ií]stica/i.test(okDig.mensaje || '') ? 'dice que ÉL la mandó a Logística' : 'NO menciona Logística (la dejó en Facturación)'}`)
+        if (!debe && l.pasoPorLogistica && quien && usuariosRobot.includes(quien.toLowerCase())) hechos.push('CONCLUSIÓN: un robot la pasó a Logística sin cumplir la regla → la PC que corre Digitadores probablemente tiene una versión vieja del robot (hacer git pull ahí).')
+        else if (!debe && l.pasoPorLogistica) hechos.push(`CONCLUSIÓN: una persona (${quien || 'desconocida'}) la pasó a mano a Logística sin cumplir la regla → preguntarle si era un envío real (y si sí, falta esa regla en el robot).`)
+        else if (debe && !l.pasoPorLogistica) hechos.push('CONCLUSIÓN: debía ir a Logística y no fue → pasarla a mano y revisar por qué el robot no lo hizo.')
+        else hechos.push('CONCLUSIÓN: el paso a Logística es correcto según la regla.')
+      }
+      partes.push([`LLAMADA ${n}`, hechos.length ? 'HECHOS CALCULADOS POR EL JEFE (confiables, explícalos tal cual):\n' + hechos.map((x) => `- ${x}`).join('\n') : '',
         band[0] ? `Bandeja: estado ${band[0].llamadas_estados?.nombre} · centro ${band[0].llamadas_centros?.nombre} · técnico ${band[0].tecnico_nombre} · SKU ${band[0].producto_sku} · ${band[0].digitado_en ? 'digitada ' + horaGT(band[0].digitado_en) : band[0].pendiente_motivo ? 'PENDIENTE: ' + corto(band[0].pendiente_motivo, 150) : 'sin digitar'}` : 'Bandeja: no está',
         l ? `CSHP: status actual "${l.statusActual}" · cliente "${corto(l.cliente, 50)}" · SKU ${l.sku} · guía recepción "${l.guiaRecep}" · comentario "${corto(l.comentario, 120)}"\nHistorial de status (más nuevo primero): ${l.statusLog.slice(0, 8).join(' → ')}${l.logistica ? `\nPaso a Logística: ${l.logistica}` : ''}` : '',
         evs.length ? 'Lo que hicieron los robots:\n' + evs.map((e) => `- ${horaGT(e.created_at)} ${e.robot} ${e.tipo}: ${corto(e.mensaje, 120)}`).join('\n') : 'Ningún robot la ha tocado',
@@ -203,7 +220,7 @@ async function investigar(texto) {
   const docs = buscarDocs(texto, 2)
   if (docs.length) partes.push('DOCUMENTACIÓN:\n' + docs.map((d) => `[${d.nombre}]\n${d.texto}`).join('\n'))
   if (!llamadas.length && !robots.length) return { resp: 'Dime qué investigo: un número de llamada (LLM21-…, LLS21-…) o un robot (digitadores, citas, guías, correos, garantías…).', fuentes: [] }
-  const resp = (await pensar(SISTEMA_CHAT + '\nAhora estás INVESTIGANDO: explica qué pasó (en orden), la causa más probable y qué hacer. Si los datos no alcanzan para saberlo, dilo y di qué revisar.',
+  const resp = (await pensar(SISTEMA_CHAT + '\nAhora estás INVESTIGANDO. Si hay HECHOS CALCULADOS y una CONCLUSIÓN, tu respuesta se basa en ellos: di qué pasó (quién, cuándo, qué status), por qué (la conclusión) y qué hacer. Menciona usuarios, horas y status concretos. NO des consejos genéricos (revisar logs, comunicarse con el equipo) si los datos ya dicen la causa.',
     `${partes.join('\n\n')}\n\nPEDIDO DE JOSHUA: ${texto}`, false, { modelo: MODELO_CHAT, ctx: 8192, max: 700 })).trim()
   guardarTurno(texto, resp, [])
   return { resp, fuentes: [...fuentes] }
