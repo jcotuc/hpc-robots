@@ -4,7 +4,7 @@
  *   · Notas que Joshua le enseña ("/aprende …"): se buscan igual que el catálogo y la IA las usa como verdad
  * La IA local NO se re-entrena: lee lo que este buscador le encuentra en cada pregunta (así lo nuevo cuenta al instante).
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync } from 'node:fs'
 
 const CATALOGO = '../truper/salida/truper_productos.json'
 const NOTAS = 'conocimiento/notas.json'
@@ -64,7 +64,8 @@ function cargar() {
   })
   IDX = { cat: indexar(docs), porCodigo, n: docs.length, fecha: existsSync(CATALOGO) ? statSync(CATALOGO).mtime : null }
   IDX.notas = indexar(leerNotas().map((n) => ({ tipo: 'nota', nombre: n.texto, categoria: '', marca: '', extra: '', ...n })))
-  console.log(`   catálogo: ${docs.length} productos indexados en ${Date.now() - t0} ms`)
+  IDX.docs = indexar(leerDocs())
+  console.log(`   catálogo: ${docs.length} productos · ${IDX.docs.N} secciones de documentación · ${Date.now() - t0} ms`)
   return IDX
 }
 
@@ -76,6 +77,19 @@ export function buscarProductos(texto, k = 5) {
   }
   return [...exactos, ...buscarEn(idx.cat, texto, k).filter((d) => !exactos.includes(d))].slice(0, k)
 }
+/* Documentación de TODOS los robots: CONTEXTO.md + README.md de cada carpeta, partida por secciones */
+function leerDocs() {
+  const out = [], archivos = [['General', '../CONTEXTO.md']]
+  for (const d of readdirSync('..', { withFileTypes: true })) if (d.isDirectory() && existsSync(`../${d.name}/README.md`)) archivos.push([d.name, `../${d.name}/README.md`])
+  for (const [robot, f] of archivos) {
+    let seccion = robot, buf = []
+    const cerrar = () => { const t = buf.join('\n').trim(); if (t.length > 40) for (let i = 0; i < t.length; i += 900) out.push({ tipo: 'doc', robot, nombre: `${robot} · ${seccion}`, categoria: robot, marca: '', extra: t.slice(i, i + 900), texto: t.slice(i, i + 900) }); buf = [] }
+    for (const l of readFileSync(f, 'utf8').split(/\r?\n/)) { if (/^#{1,3}\s/.test(l)) { cerrar(); seccion = l.replace(/^#+\s*/, '') } else buf.push(l) }
+    cerrar()
+  }
+  return out
+}
+export function buscarDocs(texto, k = 3) { return buscarEn(cargar().docs, texto, k).filter((d) => d.puntos > 2) }
 export function buscarNotas(texto, k = 3) { return buscarEn(cargar().notas, texto, k).filter((n) => n.puntos > 1) }
 export const infoCatalogo = () => { const i = cargar(); return { productos: i.n, fecha: i.fecha } }
 

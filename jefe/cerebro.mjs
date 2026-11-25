@@ -10,12 +10,15 @@
  */
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, appendFileSync, statSync } from 'node:fs'
 import { enviar, h, textoPropuestaRegla, telegramListo } from './telegram.mjs'
-import { buscarProductos, buscarNotas, ficha, leerHistorial, guardarTurno, infoCatalogo } from './conocimiento.mjs'
+import { buscarProductos, buscarNotas, buscarDocs, ficha, leerHistorial, guardarTurno, infoCatalogo } from './conocimiento.mjs'
+import { abrirCSHP, leerLlamada, cerrarCSHP } from './cshp.mjs'   // SOLO LECTURA: nunca modifica, cambia status ni acepta nada
 
 const E = process.env
 const MODELO = (E.OLLAMA_MODEL || '').trim()
 const OLLAMA = (E.OLLAMA_URL || 'http://127.0.0.1:11434').replace(/\/$/, '')
 const KK = { url: (E.KKZO_URL || '').replace(/\/$/, ''), key: E.KKZO_SERVICE_ROLE_KEY || '' }
+const CC = { url: (E.CONSUMOS_URL || '').replace(/\/$/, ''), key: E.CONSUMOS_SERVICE_ROLE_KEY || '' }
+const CSHP = { base: (E.CSHP_PROD_URL || E.CSHP_URL || '').replace(/\/(Login\.aspx)?$/i, ''), usuario: E.CSHP_PROD_USUARIO || E.CSHP_USUARIO, password: E.CSHP_PROD_PASSWORD || E.CSHP_PASSWORD }
 const ROBOTS = ['digitadores', 'citas', 'guias', 'correos', 'garantias', 'truper', 'kardex', 'auditor-repuestos', 'despacho-repuestos', 'solicitud-repuestos']
 const CENTROS = ['Nodus', 'Zona 4', 'Chimaltenango', 'Quiché', 'Escuintla', 'Río Hondo', 'Xela', 'Cobán', 'Huehuetenango', 'Mazatenango', 'Petén', 'Jutiapa', 'El Rancho', 'Morales']
 const corto = (x, n = 300) => String(x?.message || x || '').split('\n')[0].slice(0, n)
@@ -114,7 +117,7 @@ const MODELO_CHAT = (E.OLLAMA_MODEL_CHAT || MODELO).trim()
 const SISTEMA_CHAT = `Eres "el Jefe", asistente de HPC Guatemala (centros de servicio de herramientas TRUPER, PRETUL, FOSET, VOLTECK, etc.).
 Conversas con Joshua (supervisor) en español de Guatemala, natural y directo. Sabes de dos cosas:
 1) El CATÁLOGO TRUPER: te doy las FICHAS que el buscador encontró para cada pregunta (código entre corchetes, clave, especificaciones).
-2) Los ROBOTS de automatización de HPC, cuando te doy sus DATOS.
+2) Los ROBOTS de automatización de HPC: te doy su DOCUMENTACIÓN (cómo funcionan) y sus DATOS de hoy.
 REGLAS:
 - Para máquinas usa SOLO las FICHAS y las NOTAS DE JOSHUA. Menciona siempre código y clave del producto ([código] CLAVE).
 - Si la ficha no trae el dato (p. ej. peso), dilo claro; no lo inventes. El catálogo NO trae precios.
@@ -136,6 +139,8 @@ async function chatLibre(texto) {
   const partes = []
   if (notas.length) partes.push('NOTAS DE JOSHUA (son verdad):\n' + notas.map((n) => `- ${n.texto}`).join('\n'))
   if (productos.length) partes.push('FICHAS DEL CATÁLOGO TRUPER:\n' + productos.map(ficha).join('\n'))
+  const docs = buscarDocs(texto, sobreRobots(texto) ? 3 : 2)
+  if (docs.length) partes.push('DOCUMENTACIÓN DE LOS ROBOTS:\n' + docs.map((d) => `[${d.nombre}]\n${d.texto}`).join('\n'))
   if (sobreRobots(texto)) partes.push('DATOS DE LOS ROBOTS:\n' + await contexto())
   const historia = hist.slice(-3).flatMap((t) => [{ role: 'user', content: t.pregunta }, { role: 'assistant', content: t.respuesta }])
   const resp = (await pensar(SISTEMA_CHAT, `${partes.join('\n\n')}\n\nPREGUNTA DE JOSHUA: ${texto}`, false, { modelo: MODELO_CHAT, historia, ctx: 6144, max: 600 })).trim()
@@ -144,7 +149,71 @@ async function chatLibre(texto) {
   return { resp, usados, notas }
 }
 
+/* ═══ Investigar a pedido de Joshua: SOLO LECTURA (Supabase, logs de esta PC y CSHP por la web sin tocar nada) ═══ */
+const ROBOT_ALIAS = { digitadores: /digitad/, citas: /\bcita/, guias: /\bgu[ií]a/, correos: /correo|outlook/, garantias: /garant|\bndc\b|nota de cr/, truper: /truper|cat[aá]logo/, kardex: /kardex|inventario/, 'auditor-repuestos': /auditor/, 'despacho-repuestos': /despacho/, 'solicitud-repuestos': /solicitud/, jefe: /\bjefe\b/ }
+function colaLog(robot, n = 40) {
+  const dir = `../${robot}/logs`
+  if (!existsSync(dir)) return ''
+  const f = readdirSync(dir).filter((x) => /^resumen-.*\.log$|^\d{4}-\d\d-\d\d\.log$/.test(x)).sort().pop()
+  if (!f || Date.now() - statSync(`${dir}/${f}`).mtimeMs > 24 * 3600e3) return ''   // log viejo = el robot ya corre en otra PC
+  return readFileSync(`${dir}/${f}`, 'utf8').split(/\r?\n/).filter(Boolean).slice(-n).join('\n')
+}
+async function investigar(texto) {
+  const t = texto.toLowerCase(), partes = [], fuentes = new Set()
+  const llamadas = [...new Set((texto.match(/\bLL[SM]\d*-\d+\b/gi) || []).map((x) => x.toUpperCase()))].slice(0, 2)
+  if (llamadas.length) {
+    let cshp = null
+    for (const n of llamadas) {
+      const [band, evs, hs] = await Promise.all([
+        q(CC, `llamadas_actualizaciones?select=tecnico_nombre,created_at,digitado_en,pendiente_motivo,producto_sku,llamadas_centros(nombre),llamadas_estados(nombre)&num_llamada=eq.${encodeURIComponent(n)}&limit=1`).catch(() => []),
+        q(KK, `robot_eventos?select=robot,tipo,mensaje,created_at&llamada=eq.${encodeURIComponent(n)}&order=id.desc&limit=10`).catch(() => []),
+        q(KK, `jefe_hallazgos?select=titulo,causa,abierto_en,cerrado_en&or=(titulo.ilike.*${encodeURIComponent(n)}*,detalle.ilike.*${encodeURIComponent(n)}*)&order=id.desc&limit=3`).catch(() => []),
+      ])
+      let aud = {}; try { aud = JSON.parse(readFileSync('auditadas.json', 'utf8'))[n] || {} } catch {}
+      let l = null
+      try { cshp ||= await abrirCSHP(CSHP); l = await leerLlamada(cshp, n); fuentes.add('CSHP (solo lectura)') } catch (e) { partes.push(`CSHP ${n}: no se pudo leer (${corto(e, 100)})`) }
+      partes.push([`LLAMADA ${n}`,
+        band[0] ? `Bandeja: estado ${band[0].llamadas_estados?.nombre} · centro ${band[0].llamadas_centros?.nombre} · técnico ${band[0].tecnico_nombre} · SKU ${band[0].producto_sku} · ${band[0].digitado_en ? 'digitada ' + horaGT(band[0].digitado_en) : band[0].pendiente_motivo ? 'PENDIENTE: ' + corto(band[0].pendiente_motivo, 150) : 'sin digitar'}` : 'Bandeja: no está',
+        l ? `CSHP: status actual "${l.statusActual}" · cliente "${corto(l.cliente, 50)}" · SKU ${l.sku} · guía recepción "${l.guiaRecep}" · comentario "${corto(l.comentario, 120)}"\nHistorial de status (más nuevo primero): ${l.statusLog.slice(0, 8).join(' → ')}${l.logistica ? `\nPaso a Logística: ${l.logistica}` : ''}` : '',
+        evs.length ? 'Lo que hicieron los robots:\n' + evs.map((e) => `- ${horaGT(e.created_at)} ${e.robot} ${e.tipo}: ${corto(e.mensaje, 120)}`).join('\n') : 'Ningún robot la ha tocado',
+        aud.estado ? `Auditoría Logística del Jefe: ${aud.estado} (${aud.razon})` : '',
+        hs.length ? 'Alertas: ' + hs.map((x) => `${x.titulo}${x.causa ? ' — causa: ' + corto(x.causa, 100) : ''} (${x.cerrado_en ? 'resuelta' : 'abierta'})`).join(' | ') : ''].filter(Boolean).join('\n'))
+      fuentes.add('Bandeja'); fuentes.add('eventos de robots')
+    }
+    await cerrarCSHP(cshp)
+  }
+  const robots = Object.entries(ROBOT_ALIAS).filter(([, re]) => re.test(t)).map(([r]) => r)
+  for (const r of robots.slice(0, 2)) {
+    const desde = new Date(Date.now() - 24 * 3600e3).toISOString()
+    const [st, errs, hs, carga] = await Promise.all([
+      q(KK, `robot_status?select=pc,centro,estado,detalle,ultimo_error,last_seen&robot=eq.${r}`).catch(() => []),
+      q(KK, `robot_eventos?select=tipo,llamada,mensaje,created_at&robot=eq.${r}&tipo=eq.error&created_at=gte.${desde}&order=id.desc&limit=12`).catch(() => []),
+      q(KK, `jefe_hallazgos?select=titulo,causa,accion,abierto_en,cerrado_en&robot=eq.${r}&order=id.desc&limit=5`).catch(() => []),
+      q(KK, `robot_carga?select=robot,pendientes,detalle&robot=like.${r}*`).catch(() => []),
+    ])
+    const log = colaLog(r)
+    partes.push([`ROBOT ${r}`,
+      'Estado ahora: ' + (st.map((s) => `${s.centro || s.pc}: ${s.estado} (${corto(s.detalle, 60)}, hace ${Math.round((Date.now() - new Date(s.last_seen).getTime()) / 60000)} min)${s.ultimo_error ? ' último error: ' + corto(s.ultimo_error, 100) : ''}`).join(' | ') || 'sin reportes'),
+      'Pendientes: ' + (carga.map((c) => `${c.robot} ${c.pendientes ?? '?'}`).join(', ') || '—'),
+      errs.length ? 'Errores últimas 24 h:\n' + errs.map((e) => `- ${horaGT(e.created_at)} ${e.llamada || ''} ${corto(e.mensaje, 140)}`).join('\n') : 'Sin errores en 24 h',
+      hs.length ? 'Alertas recientes:\n' + hs.map((x) => `- ${x.titulo} (${x.cerrado_en ? 'resuelta' : 'abierta'})${x.causa ? ' causa: ' + corto(x.causa, 100) : ''}`).join('\n') : '',
+      log ? `Últimas líneas de su log en esta PC:\n${log.slice(-2500)}` : '(su log no está en esta PC)'].filter(Boolean).join('\n'))
+    fuentes.add('estado y errores de robots'); if (log) fuentes.add('logs de esta PC')
+  }
+  const docs = buscarDocs(texto, 2)
+  if (docs.length) partes.push('DOCUMENTACIÓN:\n' + docs.map((d) => `[${d.nombre}]\n${d.texto}`).join('\n'))
+  if (!llamadas.length && !robots.length) return { resp: 'Dime qué investigo: un número de llamada (LLM21-…, LLS21-…) o un robot (digitadores, citas, guías, correos, garantías…).', fuentes: [] }
+  const resp = (await pensar(SISTEMA_CHAT + '\nAhora estás INVESTIGANDO: explica qué pasó (en orden), la causa más probable y qué hacer. Si los datos no alcanzan para saberlo, dilo y di qué revisar.',
+    `${partes.join('\n\n')}\n\nPEDIDO DE JOSHUA: ${texto}`, false, { modelo: MODELO_CHAT, ctx: 8192, max: 700 })).trim()
+  guardarTurno(texto, resp, [])
+  return { resp, fuentes: [...fuentes] }
+}
+
 async function procesar(item) {
+  if (item.tipo === 'investiga') {
+    const { resp, fuentes } = await investigar(item.texto)
+    return enviar(`🔎 <b>Investigación</b>\n${h(resp)}${fuentes.length ? `\n\n<i>Fuentes: ${h(fuentes.join(' · '))}. No modifiqué nada.</i>` : ''}`)
+  }
   if (item.tipo === 'chat') {
     const { resp, usados, notas } = await chatLibre(item.texto)
     const pie = [usados.length ? '📦 ' + usados.map((p) => `<a href="${h(p.pagina)}">[${h(p.codigo)}] ${h(p.clave)}</a>`).join(' · ') : '', notas.length ? `🧠 usé ${notas.length} nota(s) tuya(s)` : ''].filter(Boolean).join('\n')
@@ -169,6 +238,11 @@ async function procesar(item) {
 }
 
 async function main() {
+  if (process.argv.includes('--investiga')) {   // node --env-file=.env cerebro.mjs --investiga "qué pasó con LLM21-322408"
+    const { resp, fuentes } = await investigar(process.argv.slice(process.argv.indexOf('--investiga') + 1).join(' '))
+    console.log(`\n${resp}\n\nFuentes: ${fuentes.join(' · ')}`)
+    return
+  }
   if (process.argv.includes('--chat')) {   // conversar por consola (prueba): node --env-file=.env cerebro.mjs --chat "¿qué hidrolavadora me recomiendas?"
     const p = process.argv.slice(process.argv.indexOf('--chat') + 1).join(' ')
     const { resp, usados } = await chatLibre(p)

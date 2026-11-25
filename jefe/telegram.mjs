@@ -148,7 +148,7 @@ async function mensaje(m, est, ctx) {
     if (!iaLista()) return enviar('🧠 Para el modo libre necesito la IA local: falta <code>OLLAMA_MODEL</code> en el .env.')
     est.libre = true; borrarHistorial()
     return enviar(['🧠 <b>Modo libre (prueba)</b>', LINEA, 'Háblame como quieras. Sé del <b>catálogo Truper</b> (máquinas, especificaciones, comparaciones) y de los <b>robots</b>.',
-      'Pienso con la IA local: tardo de 20 s a 1–2 min.', '', '📝 <code>/aprende</code> <i>texto</i> — enséñame algo (lo uso como verdad)', '📋 <code>/notas</code> · <code>/olvida 2</code> — ver / borrar lo que me enseñaste',
+      'Pienso con la IA local: tardo de 20 s a 1–2 min.', '', '📝 <code>/aprende</code> <i>texto</i> — enséñame algo (lo uso como verdad)', '🔎 <code>investiga</code> <i>LLM21-… o un robot</i> — reviso todo, sin modificar nada', '📋 <code>/notas</code> · <code>/olvida 2</code> — ver / borrar lo que me enseñaste',
       '🔄 <code>/nuevo</code> — empezar otra plática', '↩️ <code>/normal</code> — volver al modo de siempre'].join('\n'))
   }
   if (cmd === '/normal') { est.libre = false; return enviar('↩️ Modo normal: contesto con mis comandos de siempre. <code>/libre</code> para volver a platicar.') }
@@ -166,6 +166,14 @@ async function mensaje(m, est, ctx) {
   if (cmd === '/olvida') {
     const q = olvidarNota(parseInt(t.split(/\s+/)[1], 10))
     return enviar(q ? `🗑 Olvidé: <i>${h(q.texto)}</i>` : '🤔 ¿Cuál? Mira el número en <code>/notas</code>.')
+  }
+  if (cmd === '/investiga' || (est.libre && /^(investiga|averigua|revisa|que paso con|qué pasó con)\b/.test(t))) {
+    if (!iaLista()) return enviar('🔎 Para investigar necesito la IA local (OLLAMA_MODEL en el .env).')
+    const que = texto.replace(/^\/investiga\s*/i, '').trim()
+    if (!que) return enviar('🔎 ¿Qué investigo? Ej.: <code>/investiga LLM21-322408</code> o <code>/investiga por qué falló citas hoy</code>')
+    encolarIA('investiga', que)
+    await api('sendChatAction', { chat_id: CHAT, action: 'typing' }).catch(() => {})
+    return enviar('🔎 <i>Investigando… reviso Bandeja, eventos, logs y CSHP (solo lectura, no toco nada). Tardo 1–3 min.</i>')
   }
   if (est.libre && !texto.startsWith('/')) {
     encolarIA('chat', texto)
