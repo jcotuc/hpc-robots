@@ -217,7 +217,8 @@ async function investigar(texto) {
       log ? `Últimas líneas de su log en esta PC:\n${log.slice(-2500)}` : '(su log no está en esta PC)'].filter(Boolean).join('\n'))
     fuentes.add('estado y errores de robots'); if (log) fuentes.add('logs de esta PC')
   }
-  const docs = buscarDocs(texto, 2)
+  // con llamadas no se pasa documentación: el modelo copiaba sus pasos genéricos ("revisar logs\…") en vez de la conclusión
+  const docs = llamadas.length ? [] : buscarDocs(texto, 2)
   if (docs.length) partes.push('DOCUMENTACIÓN:\n' + docs.map((d) => `[${d.nombre}]\n${d.texto}`).join('\n'))
   if (!llamadas.length && !robots.length) return { resp: 'Dime qué investigo: un número de llamada (LLM21-…, LLS21-…) o un robot (digitadores, citas, guías, correos, garantías…).', fuentes: [] }
   const resp = (await pensar(SISTEMA_CHAT + '\nAhora estás INVESTIGANDO. Si hay HECHOS CALCULADOS y una CONCLUSIÓN, tu respuesta se basa en ellos: di qué pasó (quién, cuándo, qué status), por qué (la conclusión) y qué hacer. Menciona usuarios, horas y status concretos. NO des consejos genéricos (revisar logs, comunicarse con el equipo) si los datos ya dicen la causa.',
