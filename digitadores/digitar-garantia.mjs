@@ -300,6 +300,7 @@ async function candidatas(idEstado) {
 // ─── Reintentos ──────────────────────────────────────────────────────────────
 const PASOS_CSHP = ['sku', 'resolucion', 'facturacion', 'facturar', 'logistica']
 const MAX_INTENTOS = 3
+const MAX_INTENTOS_REANUDAR = 5 // llamadas con pasos ya hechos en CSHP (contingencia por caída)
 const tocoCSHP = (numero) => pasosHechos(numero).some((p) => PASOS_CSHP.includes(p))
 const errores = (numero) => pasosHechos(numero).filter((p) => p === 'error').length
 /** Una pendiente del robot se vuelve a tomar solo si NO cambió nada en CSHP y no agotó sus intentos */
@@ -673,14 +674,30 @@ async function cambiarStatus(page, codigo, observaciones = null) {
   throw new Error(`Cambio a status ${codigo}: CSHP no lo registró y la ventana sigue abierta`)
 }
 
+// PARCHE-FACTURAR: el botón tiene que existir y CSHP tiene que confirmar la facturación
+// (aviso "Se registro facturación" o un T - Pend. Entrega nuevo en el log). Si no, error y se detiene.
 async function facturar(page) {
-  let aviso = ''
-  const alAviso = (dialog) => { aviso = dialog.message(); dialog.accept().catch(() => {}) }
-  page.once('dialog', alAviso)
-  await clic(page, '#FrmLLamadasServ_CmdFacturar')
-  await esperarCSHP(page)
-  page.off('dialog', alAviso)
+  const boton = page.locator('#FrmLLamadasServ_CmdFacturar')
+  if (!(await boton.waitFor({ state: 'visible', timeout: 20_000 }).then(() => true).catch(() => false))) {
+    throw new Error('CSHP no muestra el botón Facturar: la llamada NO se facturó')
+  }
+  const antes = await vecesEnLog(page, 'T - Pend. Entrega')
+  const avisos = []
+  const alAviso = (dialog) => { avisos.push(dialog.message()); dialog.accept().catch(() => {}) }
+  page.on('dialog', alAviso)
+  try {
+    await boton.click({ timeout: 10_000 })
+    await esperarCSHP(page)
+    // Espera hasta 30 s el aviso de CSHP o el renglón nuevo en el log
+    for (let i = 0; i < 30 && !avisos.some((t) => /factur/i.test(t)); i++) {
+      if ((await vecesEnLog(page, 'T - Pend. Entrega')) > antes) break
+      await page.waitForTimeout(1_000)
+    }
+  } finally { page.off('dialog', alAviso) }
   await revisarError(page, 'Facturar')
+  const aviso = avisos.join(' / ')
+  const confirmada = /registr\w* facturaci/i.test(aviso) || (antes >= 0 && (await vecesEnLog(page, 'T - Pend. Entrega')) > antes)
+  if (!confirmada) throw new Error(`CSHP no confirmó la facturación${aviso ? ` (aviso: ${aviso})` : ' (sin aviso)'}`)
   return aviso
 }
 
@@ -691,9 +708,10 @@ async function procesar(page, a) {
   const esLLS = /^LLS/i.test(destino)
   // Solo se bloquea si un intento anterior YA CAMBIÓ algo en CSHP (para no duplicar status ni facturar dos veces)
   const hechos = pasosHechos(destino).filter((p) => PASOS_CSHP.includes(p))
-  if (!PRUEBA && hechos.length && registro[clave(destino)]?.estado !== 'completa') {
-    throw new Error(`Un intento anterior ya hizo en CSHP: ${hechos.join(', ')}. Revísala a mano`)
-  }
+  // CONTINGENCIA: si un intento anterior se cortó a medias (p. ej. se cayó CSHP), se REANUDA desde el
+  // paso que falta, decidido por el status ACTUAL en CSHP. Nunca se pasa a Pend. Entrega/Logística sin facturar.
+  const reanudar = !PRUEBA && hechos.length > 0 && registro[clave(destino)]?.estado !== 'completa'
+  if (reanudar) log(`   ↻ Reanudando: un intento anterior ya hizo ${hechos.join(', ')}`)
 
   const d = a.prueba || a.datos || await datosLlamada(a)
   if (!d.tecnico) {
@@ -786,10 +804,28 @@ async function procesar(page, a) {
     }
   }
 
+  let desde = 'inicio'
+  if (reanudar) {
+    const st0 = normalizar(actual)
+    if (st0 === normalizar('T - En Ruta')) desde = 'inicio' // solo se había escrito la resolución: se rehace todo
+    else if (st0 === normalizar('T - Facturación') && hechos.includes('facturacion')) desde = 'facturar'
+    else if (st0 === normalizar('T - Pend. Entrega') && hechos.includes('facturacion')) desde = 'logistica'
+    else if (st0 === normalizar('Logística - Envío') && hechos.includes('facturacion')) desde = 'fin'
+    else {
+      const motivo = `Intento anterior a medias (${hechos.join(', ')}) y CSHP está en "${actual || '?'}": revisar a mano`
+      await dejarPendiente(a, motivo)
+      anotar(destino, 'pendiente', { estado: 'pendiente', motivo })
+      log(`   ⏸️  ${numero}: ${motivo}`)
+      resumen(`${numero}  PENDIENTE  ${motivo}`)
+      return 'pendiente'
+    }
+    log(`   ↻ CSHP en "${actual}": se continúa desde ${desde}`)
+  }
+
   // Solo se digita desde los status donde CSHP permite pasar a Facturación (108). Si está en otro
   // (p. ej. T - Pend. Repuesto), NO se toca nada y queda pendiente para un digitador.
   const STATUS_OK = (process.env.CSHP_STATUS_PERMITIDOS || 'T - En Ruta').split('|').map((x) => normalizar(x))
-  if (!STATUS_OK.includes(normalizar(actual))) {
+  if (desde === 'inicio' && !STATUS_OK.includes(normalizar(actual))) {
     const motivo = actual
       ? `En CSHP está en "${actual}" (solo se digita en T - En Ruta); revisar si ya fue digitada. No se cambió nada en CSHP`
       : 'No se pudo leer el status en CSHP; solo se digita en T - En Ruta. No se cambió nada en CSHP'
@@ -800,6 +836,7 @@ async function procesar(page, a) {
     return 'pendiente'
   }
 
+  if (desde === 'inicio') {
   await escribirResolucion(page, d)
   if (d.skuNuevo) anotar(destino, 'sku', { antes: d.skuAntes, despues: d.skuNuevo, ...(d.ordenJefe ? { ordenJefe: d.ordenJefe.id } : {}) })
   if (d.ordenJefe) await marcarOrden(d.ordenJefe, 'ejecutada', `SKU ${d.skuAntes} → ${d.skuNuevo}`)
@@ -809,12 +846,15 @@ async function procesar(page, a) {
   const st = await cambiarStatus(page, ST_FACTURACION, d.tecnico)
   anotar(destino, 'facturacion', { status: st, tecnico: d.tecnico })
   log(`   ↳ Status → ${st}`)
+  }
 
+  if (desde === 'inicio' || desde === 'facturar') {
   const aviso = await facturar(page)
   anotar(destino, 'facturar', { aviso })
   log(`   ↳ Facturada${aviso ? ` (aviso: ${aviso})` : ''}`)
+  }
 
-  if (pasaLogistica) {
+  if (pasaLogistica && desde !== 'fin') {
     await abrirLlamada(page, destino)
     const st2 = await cambiarStatus(page, ST_LOGISTICA)
     anotar(destino, 'logistica', { status: st2 })
@@ -921,13 +961,17 @@ async function main() {
         resumen(`${numero}  ERROR  ${motivo}`)
         const n = QA_LLAMADA_CSHP || numero
         const hechosAntes = pasosHechos(n).filter((p) => PASOS_CSHP.includes(p))
-        if (!hechosAntes.length && errores(n) < MAX_INTENTOS) {
+        // CONTINGENCIA: CSHP caído / lento. Se suelta la llamada (sin pendiente) y se reanuda en la siguiente
+        // vuelta desde el paso que falte. Con pasos ya hechos en CSHP se dan hasta 5 intentos.
+        const cshpCaido = /net::|ERR_|timeout|timed out|no terminó de abrir|iniciar sesión|Target .*closed|ECONN|socket|503|502|500/i.test(motivo)
+        const limite = hechosAntes.length ? MAX_INTENTOS_REANUDAR : MAX_INTENTOS
+        if (errores(n) < limite) {
           await soltar(a)
-          log(`   ↻ No se cambió nada en CSHP: se reintenta en la siguiente vuelta (intento ${errores(n)}/${MAX_INTENTOS})`)
+          log(`   ↻ ${hechosAntes.length ? `En CSHP ya se hizo: ${hechosAntes.join(', ')}; se REANUDA` : 'No se cambió nada en CSHP; se reintenta'} en la siguiente vuelta (intento ${errores(n)}/${limite})`)
         } else {
-          await dejarPendiente(a, `${motivo} · subió ${await quienSubio(a)}${hechosAntes.length ? ` · En CSHP ya se hizo: ${hechosAntes.join(', ')}` : ` · No se cambió nada en CSHP (${MAX_INTENTOS} intentos)`}`)
+          await dejarPendiente(a, `${motivo} · subió ${await quienSubio(a)}${hechosAntes.length ? ` · En CSHP ya se hizo: ${hechosAntes.join(', ')} (${limite} intentos)` : ` · No se cambió nada en CSHP (${limite} intentos)`}`)
         }
-        if (/iniciar sesión/i.test(motivo)) break
+        if (cshpCaido) { log('   ⛔ CSHP no responde: se detiene esta corrida y se reintenta en la siguiente vuelta'); break }
       }
     }
   } finally {
