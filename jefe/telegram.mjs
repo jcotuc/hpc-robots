@@ -8,6 +8,7 @@
  * Chat id:  node --env-file=.env telegram.mjs --chat   (antes escríbele algo al bot)
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs'
+import { aprender, listarNotas, olvidarNota, borrarHistorial } from './conocimiento.mjs'
 
 /* ── IA local (Ollama): lo que el Jefe no entiende lo deja en cola; cerebro.mjs (tarea aparte) lo piensa y contesta ── */
 export const iaLista = () => Boolean((process.env.OLLAMA_MODEL || '').trim())
@@ -142,6 +143,35 @@ async function mensaje(m, est, ctx) {
   const texto = m.text.trim(), e = entidades(texto), t = e.t, cmd = t.split(/\s|@/)[0]
   // ¿me estaba enseñando la causa real de una alerta?
   if (est.espera && !texto.startsWith('/') && Date.now() < new Date(est.espera.hasta).getTime()) return enseñarCausa(texto, est, ctx)
+  // ── Chat libre (PRUEBA): IA local + catálogo Truper + notas ──
+  if (cmd === '/libre') {
+    if (!iaLista()) return enviar('🧠 Para el modo libre necesito la IA local: falta <code>OLLAMA_MODEL</code> en el .env.')
+    est.libre = true; borrarHistorial()
+    return enviar(['🧠 <b>Modo libre (prueba)</b>', LINEA, 'Háblame como quieras. Sé del <b>catálogo Truper</b> (máquinas, especificaciones, comparaciones) y de los <b>robots</b>.',
+      'Pienso con la IA local: tardo de 20 s a 1–2 min.', '', '📝 <code>/aprende</code> <i>texto</i> — enséñame algo (lo uso como verdad)', '📋 <code>/notas</code> · <code>/olvida 2</code> — ver / borrar lo que me enseñaste',
+      '🔄 <code>/nuevo</code> — empezar otra plática', '↩️ <code>/normal</code> — volver al modo de siempre'].join('\n'))
+  }
+  if (cmd === '/normal') { est.libre = false; return enviar('↩️ Modo normal: contesto con mis comandos de siempre. <code>/libre</code> para volver a platicar.') }
+  if (cmd === '/nuevo') { borrarHistorial(); return enviar('🔄 Listo, empezamos de cero.') }
+  if (cmd === '/aprende' || /^aprende\s*:/.test(t)) {
+    const nota = texto.replace(/^\/?aprende\s*:?\s*/i, '').trim()
+    if (nota.length < 5) return enviar('📝 Escríbeme qué aprender, por ejemplo:\n<code>/aprende La HILA-1500P2 da mucho problema de pistón en Zona 4, revisar sellos primero</code>')
+    const n = aprender(nota)
+    return enviar(`🧠 <b>Aprendido</b> (${n} nota${n > 1 ? 's' : ''}).\n<blockquote>${h(nota)}</blockquote>Lo voy a usar cuando me pregunten algo relacionado.`)
+  }
+  if (cmd === '/notas') {
+    const ns = listarNotas()
+    return enviar(ns.length ? ['📋 <b>Lo que me enseñaste</b>', LINEA, ...ns.map((x, i) => `<b>${i + 1}.</b> ${h(x.texto)}`), '', '<i>/olvida N para borrar una</i>'].join('\n') : '📋 No me has enseñado nada todavía. Usa <code>/aprende</code>.')
+  }
+  if (cmd === '/olvida') {
+    const q = olvidarNota(parseInt(t.split(/\s+/)[1], 10))
+    return enviar(q ? `🗑 Olvidé: <i>${h(q.texto)}</i>` : '🤔 ¿Cuál? Mira el número en <code>/notas</code>.')
+  }
+  if (est.libre && !texto.startsWith('/')) {
+    encolarIA('chat', texto)
+    await api('sendChatAction', { chat_id: CHAT, action: 'typing' }).catch(() => {})
+    return enviar('🧠 <i>pensando…</i>')
+  }
   // reglas
   if (cmd === '/reglas' || /^(mis )?reglas\b/.test(t)) return listarReglas(ctx)
   if (/^\/?regla\b/.test(t) || /→|->|=>/.test(texto) || (/^(cuando|si)\s/.test(t) && /(causa|hacer|nivel)\s*[:=]/.test(t))) return proponerRegla(texto, est, ctx)
@@ -419,7 +449,7 @@ function partesGT() {
 }
 
 // node --env-file=.env telegram.mjs --chat  → chats que le escribieron al bot (para TELEGRAM_CHAT_ID)
-if (process.argv.includes('--chat')) {
+if (process.argv.includes('--chat') && /telegram\.mjs$/.test(process.argv[1] || '')) {   // solo si se corre este archivo directo
   if (!TOKEN) { console.log('Falta TELEGRAM_TOKEN en .env'); process.exit(1) }
   const ups = await api('getUpdates', { timeout: 0 })
   const chats = [...new Map(ups.filter((u) => u.message).map((u) => [u.message.chat.id, u.message.chat])).values()]

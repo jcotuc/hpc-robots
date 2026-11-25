@@ -23,3 +23,6 @@ telegram-estado.json
 jefe/cerebro/
 telegram-escucha.vivo
 telegram-resumenes.json
+# Jefe: notas, historial del chat libre (local)
+jefe/conocimiento/
+jefe/_c3.mjs

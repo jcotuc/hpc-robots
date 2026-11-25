@@ -10,6 +10,7 @@
  */
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, appendFileSync, statSync } from 'node:fs'
 import { enviar, h, textoPropuestaRegla, telegramListo } from './telegram.mjs'
+import { buscarProductos, buscarNotas, ficha, leerHistorial, guardarTurno, infoCatalogo } from './conocimiento.mjs'
 
 const E = process.env
 const MODELO = (E.OLLAMA_MODEL || '').trim()
@@ -28,17 +29,17 @@ async function q(db, path) {
 }
 
 /* ── Ollama ── */
-async function pensar(sistema, usuario, json = false) {
+async function pensar(sistema, usuario, json = false, { modelo = MODELO, historia = [], ctx = 4096, max = 500 } = {}) {
   const t0 = Date.now()
   const r = await fetch(`${OLLAMA}/api/chat`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(240000),
-    body: JSON.stringify({ model: MODELO, stream: false, keep_alive: '3m', ...(json ? { format: 'json' } : {}),
-      options: { temperature: 0.2, num_ctx: 4096, num_predict: 500 },
-      messages: [{ role: 'system', content: sistema }, { role: 'user', content: usuario }] }),
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(300000),
+    body: JSON.stringify({ model: modelo, stream: false, keep_alive: '5m', ...(json ? { format: 'json' } : {}),
+      options: { temperature: 0.2, num_ctx: ctx, num_predict: max },
+      messages: [{ role: 'system', content: sistema }, ...historia, { role: 'user', content: usuario }] }),
   })
   if (!r.ok) throw new Error(`Ollama HTTP ${r.status}: ${(await r.text()).slice(0, 150)}`)
   const j = await r.json()
-  log(`   IA ${MODELO}: ${((Date.now() - t0) / 1000).toFixed(0)} s`)
+  log(`   IA ${modelo}: ${((Date.now() - t0) / 1000).toFixed(0)} s`)
   return j.message?.content || ''
 }
 
@@ -108,7 +109,47 @@ async function proponer(r, texto) {
   await enviar(L.join('\n'), [[{ text: '✅ Sí, guárdala', callback_data: `ri+|${id}` }, { text: '✏️ No, la corrijo', callback_data: 'r-|0' }]])
 }
 
+/* ═══ Chat libre (PRUEBA): conversa con historial y responde de máquinas con el catálogo Truper + lo que Joshua le enseña ═══ */
+const MODELO_CHAT = (E.OLLAMA_MODEL_CHAT || MODELO).trim()
+const SISTEMA_CHAT = `Eres "el Jefe", asistente de HPC Guatemala (centros de servicio de herramientas TRUPER, PRETUL, FOSET, VOLTECK, etc.).
+Conversas con Joshua (supervisor) en español de Guatemala, natural y directo. Sabes de dos cosas:
+1) El CATÁLOGO TRUPER: te doy las FICHAS que el buscador encontró para cada pregunta (código entre corchetes, clave, especificaciones).
+2) Los ROBOTS de automatización de HPC, cuando te doy sus DATOS.
+REGLAS:
+- Para máquinas usa SOLO las FICHAS y las NOTAS DE JOSHUA. Menciona siempre código y clave del producto ([código] CLAVE).
+- Si la ficha no trae el dato (p. ej. peso), dilo claro; no lo inventes. El catálogo NO trae precios.
+- Si comparas, haz una lista corta con la diferencia clave de cada uno.
+- Las NOTAS DE JOSHUA son verdad y tienen prioridad sobre todo lo demás.
+- Si las fichas no tienen nada que ver con la pregunta, di que no encontraste ese producto y pide más detalles (marca, potencia, uso).
+- Máximo 12 líneas.`
+const esSeguimiento = (t) => palabrasCortas(t) <= 6 || /\b(ese|esa|eso|esos|esas|el primero|el segundo|el tercero|el otro|cual de|y el|y la|tambien|comparalos|compara)\b/i.test(t.normalize('NFD').replace(/[̀-ͯ]/g, ''))
+const palabrasCortas = (t) => String(t).trim().split(/\s+/).length
+const sobreRobots = (t) => /robot|alerta|digitador|citas|guias|correo|garantias|jefe|pendiente|cshp|llamada|bandeja|caido|error/i.test(t.normalize('NFD').replace(/[̀-ͯ]/g, ''))
+
+async function chatLibre(texto) {
+  const hist = leerHistorial()
+  // productos: lo que encuentra el buscador + (si es seguimiento) los de la plática anterior
+  let productos = buscarProductos(texto, 5)
+  const previos = hist.length && esSeguimiento(texto) ? hist[hist.length - 1].codigos.flatMap((c) => buscarProductos(c, 1)) : []
+  productos = [...previos, ...productos.filter((p) => !previos.some((x) => x.codigo === p.codigo))].slice(0, 6)
+  const notas = buscarNotas(texto, 3)
+  const partes = []
+  if (notas.length) partes.push('NOTAS DE JOSHUA (son verdad):\n' + notas.map((n) => `- ${n.texto}`).join('\n'))
+  if (productos.length) partes.push('FICHAS DEL CATÁLOGO TRUPER:\n' + productos.map(ficha).join('\n'))
+  if (sobreRobots(texto)) partes.push('DATOS DE LOS ROBOTS:\n' + await contexto())
+  const historia = hist.slice(-3).flatMap((t) => [{ role: 'user', content: t.pregunta }, { role: 'assistant', content: t.respuesta }])
+  const resp = (await pensar(SISTEMA_CHAT, `${partes.join('\n\n')}\n\nPREGUNTA DE JOSHUA: ${texto}`, false, { modelo: MODELO_CHAT, historia, ctx: 6144, max: 600 })).trim()
+  const usados = productos.filter((p) => resp.includes(p.codigo) || resp.toLowerCase().includes(p.clave.toLowerCase())).slice(0, 4)
+  guardarTurno(texto, resp, (usados.length ? usados : productos.slice(0, 2)).map((p) => p.codigo))
+  return { resp, usados, notas }
+}
+
 async function procesar(item) {
+  if (item.tipo === 'chat') {
+    const { resp, usados, notas } = await chatLibre(item.texto)
+    const pie = [usados.length ? '📦 ' + usados.map((p) => `<a href="${h(p.pagina)}">[${h(p.codigo)}] ${h(p.clave)}</a>`).join(' · ') : '', notas.length ? `🧠 usé ${notas.length} nota(s) tuya(s)` : ''].filter(Boolean).join('\n')
+    return enviar(`${h(resp)}${pie ? `\n\n<i>${pie}</i>` : ''}`)
+  }
   if (item.tipo === 'regla') {
     const sal = await pensar(SISTEMA, `Joshua te quiere enseñar una regla para tus alertas. Conviértela a JSON con este formato exacto:\n{${FORMATO_REGLA}}\n\nnivel: "alta" = avisar al momento (crítico), "media" = solo en el resumen, "ignorar" = no avisar.\nREGLA DE JOSHUA: ${item.texto}`, true)
     const r = limpiarRegla(JSON.parse(sal).regla || JSON.parse(sal))
@@ -128,6 +169,12 @@ async function procesar(item) {
 }
 
 async function main() {
+  if (process.argv.includes('--chat')) {   // conversar por consola (prueba): node --env-file=.env cerebro.mjs --chat "¿qué hidrolavadora me recomiendas?"
+    const p = process.argv.slice(process.argv.indexOf('--chat') + 1).join(' ')
+    const { resp, usados } = await chatLibre(p)
+    console.log(`\n${resp}\n\n📦 ${usados.map((x) => `[${x.codigo}] ${x.clave}`).join(' · ') || '(sin fichas citadas)'}`)
+    return
+  }
   if (process.argv.includes('--datos')) { console.log(await contexto()); return }   // ver exactamente lo que se le pasa a la IA
   if (process.argv.includes('--probar')) {
     if (!MODELO) { console.log('Falta OLLAMA_MODEL en .env'); return }
