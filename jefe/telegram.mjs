@@ -8,7 +8,7 @@
  * Chat id:  node --env-file=.env telegram.mjs --chat   (antes escríbele algo al bot)
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs'
-import { aprender, listarNotas, olvidarNota, borrarHistorial } from './conocimiento.mjs'
+import { aprender, listarNotas, olvidarNota, borrarHistorial, buscarProductos } from './conocimiento.mjs'
 
 /* ── IA local (Ollama): lo que el Jefe no entiende lo deja en cola; cerebro.mjs (tarea aparte) lo piensa y contesta ── */
 export const iaLista = () => Boolean((process.env.OLLAMA_MODEL || '').trim())
@@ -46,6 +46,29 @@ async function api(metodo, cuerpo, intento = 1) {
   const j = await r.json().catch(() => ({}))
   if (!j.ok) throw new Error(`Telegram ${metodo}: ${j.description || r.status}`)
   return j.result
+}
+/* Editar un mensaje ya enviado (así "pensando…" se convierte en la respuesta, sin llenar el chat) */
+export async function editar(msgId, texto, botones = null) {
+  return api('editMessageText', { chat_id: CHAT, message_id: msgId, text: texto.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true,
+    ...(botones ? { reply_markup: { inline_keyboard: botones } } : {}) })
+}
+export const accion = (tipo = 'typing') => api('sendChatAction', { chat_id: CHAT, action: tipo }).catch(() => {})
+/* La IA escribe en Markdown; Telegram usa HTML: **negrita**, `código`, listas y títulos → HTML seguro */
+export function mdAHtml(md) {
+  return h(String(md || '').trim())
+    .replace(/^#{1,4}\s*(.+)$/gm, '<b>$1</b>')
+    .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/__(.+?)__/g, '<b>$1</b>')
+    .replace(/(^|[\s(])\*(?!\s)([^*\n]+?)\*(?=[\s).,;:!?]|$)/g, '$1<i>$2</i>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/^\s*[-*•]\s+/gm, '• ')
+    .replace(/\[(\d{4,6})\]/g, '<code>$1</code>')
+    .replace(/\n{3,}/g, '\n\n')
+}
+/* Manda el aviso ("pensando…") y deja el trabajo en la cola del cerebro con el id del aviso para editarlo después */
+async function aCerebro(tipo, texto, aviso) {
+  await accion()
+  const m = await enviar(aviso).catch(() => null)
+  encolarIA(tipo, texto, { msg: m?.message_id || null })
 }
 export async function enviar(texto, botones = null, chat = CHAT) {
   return api('sendMessage', { chat_id: chat, text: texto.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true,
@@ -143,6 +166,11 @@ async function mensaje(m, est, ctx) {
   const texto = m.text.trim(), e = entidades(texto), t = e.t, cmd = t.split(/\s|@/)[0]
   // ¿me estaba enseñando la causa real de una alerta?
   if (est.espera && !texto.startsWith('/') && Date.now() < new Date(est.espera.hasta).getTime()) return enseñarCausa(texto, est, ctx)
+  if (est.correccion && !texto.startsWith('/') && Date.now() < new Date(est.correccion.hasta).getTime()) {
+    const c = est.correccion; est.correccion = null
+    const n = aprender(`Corrección de Joshua (pregunta: "${c.pregunta}"): ${texto}`)
+    return enviar(`🧠 <b>Gracias, corregido.</b> Lo guardé como nota #${n} y lo voy a tomar como verdad.\n<blockquote>${h(texto)}</blockquote>`)
+  }
   // ── Chat libre (PRUEBA): IA local + catálogo Truper + notas ──
   if (cmd === '/libre') {
     if (!iaLista()) return enviar('🧠 Para el modo libre necesito la IA local: falta <code>OLLAMA_MODEL</code> en el .env.')
@@ -171,21 +199,17 @@ async function mensaje(m, est, ctx) {
     if (!iaLista()) return enviar('🔎 Para investigar necesito la IA local (OLLAMA_MODEL en el .env).')
     const que = texto.replace(/^\/investiga\s*/i, '').trim()
     if (!que) return enviar('🔎 ¿Qué investigo? Ej.: <code>/investiga LLM21-322408</code> o <code>/investiga por qué falló citas hoy</code>')
-    encolarIA('investiga', que)
-    await api('sendChatAction', { chat_id: CHAT, action: 'typing' }).catch(() => {})
-    return enviar('🔎 <i>Investigando… reviso Bandeja, eventos, logs y CSHP (solo lectura, no toco nada). Tardo 1–3 min.</i>')
+    return aCerebro('investiga', que, '🔎 <i>Investigando…</i>\n<i>Bandeja · eventos · logs · CSHP (solo lectura, no toco nada)</i>')
   }
   if (est.libre && !texto.startsWith('/')) {
-    encolarIA('chat', texto)
-    await api('sendChatAction', { chat_id: CHAT, action: 'typing' }).catch(() => {})
-    return enviar('🧠 <i>pensando…</i>')
+    return aCerebro('chat', texto, '🧠 <i>pensando…</i>')
   }
   // reglas
   if (cmd === '/reglas' || /^(mis )?reglas\b/.test(t)) return listarReglas(ctx)
   if (/^\/?regla\b/.test(t) || /→|->|=>/.test(texto) || (/^(cuando|si)\s/.test(t) && /(causa|hacer|nivel)\s*[:=]/.test(t))) return proponerRegla(texto, est, ctx)
   // instrucciones en lenguaje libre ("no me avises de…", "avísame si…", "ignora…", "que sea crítico…") → regla
   if (/no me avis|avisame|ignora|silencia|que sea critic|ponle (nivel|prioridad)|subele|bajale|no quiero (ver|que me)|cuando pase/.test(t)) {
-    if (iaLista()) { encolarIA('regla', texto); return enviar('🧠 Entendido, déjame convertir eso en regla y te muestro cómo la entendí <i>(1–3 min)</i>.') }
+    if (iaLista()) return aCerebro('regla', texto, '📏 <i>Entendido, convirtiendo eso en regla…</i>')
     return proponerRegla(texto, est, ctx)
   }
   // comandos y frases
@@ -203,8 +227,7 @@ async function mensaje(m, est, ctx) {
   if (/^(hola|buen|que onda|hey|saludos)/.test(t)) return enviar(`👑 ¡Hola, Joshua!\n\n${await textoEstado(ctx, e, true)}\n\n<i>Pregúntame lo que quieras o escribe "ayuda".</i>`)
   if (/^(gracias|ok|listo|va|perfecto|excelente|vale|dale)\b/.test(t)) return enviar('👌 A la orden. Sigo vigilando.')
   if (iaLista()) {
-    encolarIA('pregunta', texto)
-    return enviar('🧠 Déjame pensarlo… <i>(te contesto en 1–3 min)</i>')
+    return aCerebro('pregunta', texto, '🧠 <i>Déjame pensarlo…</i>')
   }
   return enviar(`🤔 No te entendí eso.\n\nPrueba con algo como:\n• <i>cómo va Cobán</i>\n• <i>pendientes de digitadores</i>\n• <i>por qué falló citas</i>\n• <i>LLM21-322408</i>\n• <i>cuando el error diga Outlook → causa: Outlook cerrado → hacer: abrir Outlook</i>\n\nO escribe <b>ayuda</b>.`)
 }
@@ -365,8 +388,7 @@ async function proponerRegla(texto, est, ctx) {
   if (condicionVacia(r)) falta.push('🤔 No entendí <b>cuándo</b> aplica. Dime un robot, un centro o qué texto dice la alerta (entre comillas).')
   if (!r.causa && !r.accion && !r.nivel) falta.push('🤔 No entendí <b>qué hago</b> cuando pase. Usa <code>causa:</code>, <code>hacer:</code> o <code>nivel: crítico | atención | ignorar</code>.')
   if (falta.length && iaLista()) {
-    encolarIA('regla', texto)
-    return enviar('🧠 No la entendí a la primera. Déjame pensarla con calma y te digo cómo la entendí <i>(1–3 min)</i>.')
+    return aCerebro('regla', texto, '📏 <i>No la entendí a la primera, la estoy pensando…</i>')
   }
   if (falta.length) return enviar([`📏 <b>Casi…</b>`, LINEA, ...falta, '', 'Ejemplo:', '<i>cuando correos diga "Outlook" → causa: Outlook cerrado → hacer: abrir Outlook → nivel: atención</i>'].join('\n'))
   est.reglaPendiente = { ...r, texto, vence: new Date(Date.now() + 2 * 3600e3).toISOString() }
@@ -399,7 +421,33 @@ async function listarReglas(ctx) {
 
 async function boton(cb, est, ctx) {
   if (String(cb.message?.chat?.id) !== CHAT) return
-  const [acc, id] = String(cb.data || '').split('|')
+  const [acc, id, extra] = String(cb.data || '').split('|')
+  const ok = (txt) => api('answerCallbackQuery', { callback_query_id: cb.id, text: txt }).catch(() => {})
+  // ── chat libre: ficha completa, preguntas sugeridas, 👍/👎 ──
+  if (acc === 'fi') {
+    await ok('📄')
+    const p = buscarProductos(id, 1)[0]
+    if (!p || p.codigo !== id) return enviar('🤷 No encontré esa ficha.')
+    return enviar([`📄 <b>${h(p.nombre)}</b>`, LINEA, `<code>${h(p.codigo)}</code> · <b>${h(p.clave)}</b> · ${h(p.marca)}`, `<i>${h(p.categoria)}</i>`,
+      p.specs.length ? `\n⚙️ <b>Especificaciones</b>\n${p.specs.map((x) => `• ${h(x)}`).join('\n')}` : '', p.caract.length ? `\n✨ <b>Características</b>\n${p.caract.map((x) => `• ${h(x)}`).join('\n')}` : '',
+      p.empaque ? `\n📦 ${h(p.empaque)}` : '', p.garantia ? `🛡 ${h(p.garantia)}` : '', p.pagina ? `\n<a href="${h(p.pagina)}">Ver en el catálogo Truper</a>` : ''].filter(Boolean).join('\n'))
+  }
+  if (acc === 'sg') {
+    let sug = {}; try { sug = JSON.parse(readFileSync('conocimiento/sugerencias.json', 'utf8')) } catch {}
+    const pregunta = sug[id]?.opciones?.[+extra]
+    if (!pregunta) return ok('Ya no tengo esa sugerencia')
+    await ok('👌')
+    await api('editMessageReplyMarkup', { chat_id: CHAT, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+    await enviar(`💬 <i>${h(pregunta)}</i>`)
+    return aCerebro('chat', pregunta, '🧠 <i>pensando…</i>')
+  }
+  if (acc === 'fb+') { await api('editMessageReplyMarkup', { chat_id: CHAT, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {}); return ok('¡Gracias! 👍') }
+  if (acc === 'fb-') {
+    let sug = {}; try { sug = JSON.parse(readFileSync('conocimiento/sugerencias.json', 'utf8')) } catch {}
+    est.correccion = { pregunta: sug[id]?.pregunta || '', hasta: new Date(Date.now() + 2 * 3600e3).toISOString() }
+    await ok('Anotado 👎')
+    return enviar('🤔 ¿Qué estuvo mal o qué es lo correcto? Escríbemelo y lo guardo para la próxima.')
+  }
   const responder = (txt) => api('answerCallbackQuery', { callback_query_id: cb.id, text: txt }).catch(() => {})
   const quitarBotones = () => api('editMessageReplyMarkup', { chat_id: CHAT, message_id: cb.message.message_id, reply_markup: { inline_keyboard: [] } }).catch(() => {})
   if (acc === 'r+') {

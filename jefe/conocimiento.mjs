@@ -81,7 +81,7 @@ export function buscarProductos(texto, k = 5) {
 function leerDocs() {
   const out = [], archivos = [['General', '../CONTEXTO.md']]
   for (const d of readdirSync('..', { withFileTypes: true })) if (d.isDirectory() && existsSync(`../${d.name}/README.md`)) archivos.push([d.name, `../${d.name}/README.md`])
-  for (const [robot, f] of archivos) {
+  for (const [robot, f] of archivos.filter(([, f]) => existsSync(f))) {
     let seccion = robot, buf = []
     const cerrar = () => { const t = buf.join('\n').trim(); if (t.length > 40) for (let i = 0; i < t.length; i += 900) out.push({ tipo: 'doc', robot, nombre: `${robot} · ${seccion}`, categoria: robot, marca: '', extra: t.slice(i, i + 900), texto: t.slice(i, i + 900) }); buf = [] }
     for (const l of readFileSync(f, 'utf8').split(/\r?\n/)) { if (/^#{1,3}\s/.test(l)) { cerrar(); seccion = l.replace(/^#+\s*/, '') } else buf.push(l) }

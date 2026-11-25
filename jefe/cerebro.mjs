@@ -9,7 +9,7 @@
  * .env: OLLAMA_MODEL=qwen2.5:3b   OLLAMA_URL=http://127.0.0.1:11434 (opcional)
  */
 import { readdirSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, appendFileSync, statSync } from 'node:fs'
-import { enviar, h, textoPropuestaRegla, telegramListo } from './telegram.mjs'
+import { enviar, editar, accion, mdAHtml, h, textoPropuestaRegla, telegramListo } from './telegram.mjs'
 import { buscarProductos, buscarNotas, buscarDocs, ficha, leerHistorial, guardarTurno, infoCatalogo } from './conocimiento.mjs'
 import { abrirCSHP, leerLlamada, cerrarCSHP } from './cshp.mjs'   // SOLO LECTURA: nunca modifica, cambia status ni acepta nada
 
@@ -109,7 +109,7 @@ async function proponer(r, texto) {
   const L = await textoPropuestaRegla(r, { q: (db, p) => q(KK, p), KK, corto }, '🧠📏 <b>Así entendí tu regla</b>')
   if (r.explicacion) L.splice(2, 0, `<i>${h(r.explicacion)}</i>`, '')
   L.push('', '¿La guardo?')
-  await enviar(L.join('\n'), [[{ text: '✅ Sí, guárdala', callback_data: `ri+|${id}` }, { text: '✏️ No, la corrijo', callback_data: 'r-|0' }]])
+  await responder(L.join('\n'), [[{ text: '✅ Sí, guárdala', callback_data: `ri+|${id}` }, { text: '✏️ No, la corrijo', callback_data: 'r-|0' }]])
 }
 
 /* ═══ Chat libre (PRUEBA): conversa con historial y responde de máquinas con el catálogo Truper + lo que Joshua le enseña ═══ */
@@ -227,20 +227,57 @@ async function investigar(texto) {
   return { resp, fuentes: [...fuentes] }
 }
 
+/* ── Responder editando el aviso "pensando…" (si no se puede, manda mensaje nuevo) ── */
+let ITEM = null
+async function responder(texto, botones = null) {
+  if (ITEM?.msg) { try { return await editar(ITEM.msg, texto, botones) } catch {} }
+  return enviar(texto, botones)
+}
+async function avance(texto) { if (ITEM?.msg) await editar(ITEM.msg, texto).catch(() => {}) }
+/* "escribiendo…" en Telegram mientras la IA piensa, y el aviso cuenta los segundos */
+async function conEscribiendo(etiqueta, fn) {
+  const t0 = Date.now()
+  const tic = setInterval(() => { accion(); avance(`${etiqueta} <i>${Math.round((Date.now() - t0) / 1000)} s</i>`) }, 6000)
+  accion()
+  try { return await fn() } finally { clearInterval(tic) }
+}
+/* Botones de seguimiento: ficha de cada producto, preguntas sugeridas y 👍/👎 */
+function botonesDe(pregunta, sugerencias, productos = []) {
+  mkdirSync('conocimiento', { recursive: true })
+  const id = Date.now().toString(36)
+  let todas = {}; try { todas = JSON.parse(readFileSync('conocimiento/sugerencias.json', 'utf8')) } catch {}
+  todas[id] = { pregunta, opciones: sugerencias }
+  writeFileSync('conocimiento/sugerencias.json', JSON.stringify(Object.fromEntries(Object.entries(todas).slice(-30))))
+  const filas = []
+  if (productos.length) filas.push(productos.slice(0, 3).map((p) => ({ text: `📄 ${p.clave}`, callback_data: `fi|${p.codigo}` })))
+  sugerencias.forEach((q, i) => filas.push([{ text: `💬 ${q}`, callback_data: `sg|${id}|${i}` }]))
+  filas.push([{ text: '👍', callback_data: `fb+|${id}` }, { text: '👎 No es así', callback_data: `fb-|${id}` }])
+  return filas
+}
+function sugerir(texto, productos) {
+  const t = texto.toLowerCase()
+  if (productos.length >= 2 && !/compar|diferencia/.test(t)) return ['Compáralas', productos[0] ? `¿Qué garantía tiene la ${productos[0].clave}?` : null].filter(Boolean)
+  if (productos.length === 1) return [`¿Qué accesorios usa la ${productos[0].clave}?`, `¿Hay una más potente que la ${productos[0].clave}?`]
+  return []
+}
+
 async function procesar(item) {
+  ITEM = item
   if (item.tipo === 'investiga') {
-    const { resp, fuentes } = await investigar(item.texto)
-    return enviar(`🔎 <b>Investigación</b>\n${h(resp)}${fuentes.length ? `\n\n<i>Fuentes: ${h(fuentes.join(' · '))}. No modifiqué nada.</i>` : ''}`)
+    const { resp, fuentes } = await conEscribiendo('🔎 <i>Investigando… (CSHP solo lectura)</i>', () => investigar(item.texto))
+    const sug = /LL[SM]\d*-\d+/i.test(item.texto) ? ['¿Qué hago ahora?', 'Investiga el robot de digitadores'] : ['¿Qué hago ahora?']
+    return responder(`🔎 <b>Investigación</b>\n${mdAHtml(resp)}${fuentes.length ? `\n\n<i>Fuentes: ${h(fuentes.join(' · '))}. No modifiqué nada.</i>` : ''}`, botonesDe(item.texto, sug))
   }
   if (item.tipo === 'chat') {
-    const { resp, usados, notas } = await chatLibre(item.texto)
-    const pie = [usados.length ? '📦 ' + usados.map((p) => `<a href="${h(p.pagina)}">[${h(p.codigo)}] ${h(p.clave)}</a>`).join(' · ') : '', notas.length ? `🧠 usé ${notas.length} nota(s) tuya(s)` : ''].filter(Boolean).join('\n')
-    return enviar(`${h(resp)}${pie ? `\n\n<i>${pie}</i>` : ''}`)
+    await avance('🔎 <i>Buscando en el catálogo y en lo que sé…</i>')
+    const { resp, usados, notas } = await conEscribiendo('🧠 <i>Pensando…</i>', () => chatLibre(item.texto))
+    const pie = [usados.length ? '📦 ' + usados.map((p) => `<a href="${h(p.pagina)}">${h(p.clave)}</a>`).join(' · ') : '', notas.length ? `🧠 usé ${notas.length} nota(s) tuya(s)` : ''].filter(Boolean).join('\n')
+    return responder(`${mdAHtml(resp)}${pie ? `\n\n<i>${pie}</i>` : ''}`, botonesDe(item.texto, sugerir(item.texto, usados), usados))
   }
   if (item.tipo === 'regla') {
     const sal = await pensar(SISTEMA, `Joshua te quiere enseñar una regla para tus alertas. Conviértela a JSON con este formato exacto:\n{${FORMATO_REGLA}}\n\nnivel: "alta" = avisar al momento (crítico), "media" = solo en el resumen, "ignorar" = no avisar.\nREGLA DE JOSHUA: ${item.texto}`, true)
     const r = limpiarRegla(JSON.parse(sal).regla || JSON.parse(sal))
-    if (!reglaValida(r)) return enviar(`🧠 Lo pensé, pero no logré entender bien la regla:\n<i>${h(item.texto)}</i>\n\nDímela con: <b>cuándo</b> aplica (robot, centro o qué dice la alerta) y <b>qué hago</b> (causa, qué hacer o nivel).`)
+    if (!reglaValida(r)) return responder(`🧠 Lo pensé, pero no logré entender bien la regla:\n<i>${h(item.texto)}</i>\n\nDímela con: <b>cuándo</b> aplica (robot, centro o qué dice la alerta) y <b>qué hago</b> (causa, qué hacer o nivel).`)
     return proponer(r, item.texto)
   }
   // pregunta (o instrucción disfrazada de pregunta)
@@ -252,7 +289,7 @@ async function procesar(item) {
     if (reglaValida(r)) return proponer(r, item.texto)
   }
   const resp = String(j.respuesta || '').trim()
-  return enviar(resp ? `🧠 ${h(resp)}\n\n<i>— respuesta de mi IA local; si algo no cuadra, dime.</i>` : '🧠 Lo pensé, pero no tengo datos para contestarte eso.')
+  return responder(resp ? `🧠 ${mdAHtml(resp)}` : '🧠 Lo pensé, pero no tengo datos para contestarte eso.', resp ? botonesDe(item.texto, []) : null)
 }
 
 async function main() {
