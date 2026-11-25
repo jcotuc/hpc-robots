@@ -683,7 +683,7 @@ async function datosFactura(page) {
 
 // PARCHE-FACTURAR: el botón tiene que existir y CSHP tiene que confirmar la facturación
 // (aviso "Se registro facturación" o un T - Pend. Entrega nuevo en el log). Si no, error y se detiene.
-async function facturar(page, numero) {
+async function facturar(page, numero, tecnico) {
   // Si ya tiene Caja/Transacción, ya está facturada: nunca se factura dos veces
   const previa = await datosFactura(page)
   if (previa) {
@@ -709,9 +709,10 @@ async function facturar(page, numero) {
   // Prueba de facturación: se VUELVE A ABRIR la llamada y se exige Caja + Transacción (p. ej. HP204 / 155970)
   // o el renglón T - Pend. Entrega con el documento (HP204-155970)
   let factura = ''
+  let st = ''
   for (let intento = 1; intento <= 3 && !factura; intento++) {
     await abrirLlamada(page, numero).catch(() => {})
-    const st = normalizar(await statusActual(page).catch(() => ''))
+    st = normalizar(await statusActual(page).catch(() => ''))
     if (st !== normalizar('T - Pend. Entrega')) { await page.waitForTimeout(3_000); continue }
     factura = await datosFactura(page)
     if (!factura) {
@@ -719,6 +720,13 @@ async function facturar(page, numero) {
       factura = (doc.match(/\b[A-Z]{2}\d{3}-\d+\b/) || [])[0] || ''
     }
     if (!factura) await page.waitForTimeout(3_000)
+  }
+  if (!factura && st === normalizar('T - Pend. Entrega')) {
+    // CSHP la pasó a T - Pend. Entrega SIN factura: se regresa a T - Facturación para volver a facturar
+    await cambiarStatus(page, ST_FACTURACION, tecnico)
+    const e = new Error(`CSHP la pasó a T - Pend. Entrega sin factura (Caja/Transacción vacías): se regresó a T - Facturación, revisar a mano${aviso ? ` · aviso: ${aviso}` : ''}`)
+    e.sinReintento = true
+    throw e
   }
   if (!factura) throw new Error(`Facturar no pasó: la llamada sigue sin T - Pend. Entrega/factura, se deja en T - Facturación y se reintenta${aviso ? ` · aviso: ${aviso}` : ''}`)
   return `${aviso ? aviso + ' · ' : ''}factura ${factura}`
@@ -757,7 +765,10 @@ async function procesar(page, a) {
     // Mismo centro con distinto nombre en la Bandeja y en CSHP
     const ALIAS = { quetzaltenango: 'xela', 'guate z5': 'zona 5', 'zona 6 nodus': 'zona 6', nodus: 'zona 6' }
     const base = (t) => { const b = normalizar(t).replace(/^centro de servicio\s*/, '').replace(/\s+/g, ' ').trim(); return ALIAS[b] || b }
-    if (centroCSHP && base(centroCSHP) !== base(a.llamadas_centros.nombre)) {
+    // Si no se pudo leer el centro de CSHP NO se sigue (antes se saltaba la regla): se reintenta
+    if (!centroCSHP) throw new Error(`No se pudo leer el centro de servicio en CSHP para ${destino}`)
+    log(`   ↳ Centro: Bandeja ${a.llamadas_centros.nombre} · CSHP ${centroCSHP}`)
+    if (base(centroCSHP) !== base(a.llamadas_centros.nombre)) {
       const motivo = `El centro no coincide (Bandeja: ${a.llamadas_centros.nombre}, CSHP: ${centroCSHP}): revisar el número de llamada con ${await quienSubio(a)}. No se cambió nada en CSHP`
       await dejarPendiente(a, motivo)
       anotar(destino, 'pendiente', { estado: 'pendiente', motivo })
@@ -834,7 +845,19 @@ async function procesar(page, a) {
     else if (st0 === normalizar('T - Facturación') && hechos.includes('facturacion')) {
       desde = 'facturar' // sigue en T - Facturación: falta que Facturar la pase a T - Pend. Entrega
     }
-    else if (st0 === normalizar('T - Pend. Entrega') && hechos.includes('facturacion') && await datosFactura(page)) desde = 'logistica'
+    else if (st0 === normalizar('T - Pend. Entrega') && hechos.includes('facturacion')) {
+      if (await datosFactura(page)) desde = 'logistica'
+      else {
+        // En T - Pend. Entrega sin factura: se regresa a T - Facturación y se vuelve a facturar
+        await cambiarStatus(page, ST_FACTURACION, d.tecnico)
+        const motivo = 'Estaba en T - Pend. Entrega sin factura: se regresó a T - Facturación, revisar a mano'
+        await dejarPendiente(a, motivo)
+        anotar(destino, 'pendiente', { estado: 'pendiente', motivo })
+        log(`   ⏸️  ${numero}: ${motivo}`)
+        resumen(`${numero}  PENDIENTE  ${motivo}`)
+        return 'pendiente'
+      }
+    }
     else if (st0 === normalizar('Logística - Envío') && hechos.includes('facturacion')) desde = 'fin'
     else {
       const motivo = `Intento anterior a medias (${hechos.join(', ')}) y CSHP está en "${actual || '?'}": revisar a mano`
@@ -874,7 +897,7 @@ async function procesar(page, a) {
   }
 
   if (desde === 'inicio' || desde === 'facturar') {
-  const aviso = await facturar(page, destino)
+  const aviso = await facturar(page, destino, d.tecnico)
   anotar(destino, 'facturar', { aviso })
   log(`   ↳ Facturada${aviso ? ` (aviso: ${aviso})` : ''}`)
   }
@@ -990,10 +1013,9 @@ async function main() {
         // vuelta desde el paso que falte. Con pasos ya hechos en CSHP se dan hasta 5 intentos.
         const cshpCaido = /net::|ERR_|timeout|timed out|no terminó de abrir|iniciar sesión|Target .*closed|ECONN|socket|503|502|500/i.test(motivo)
         const limite = hechosAntes.length ? MAX_INTENTOS_REANUDAR : MAX_INTENTOS
-        const faltaFacturar = hechosAntes.includes('facturacion') && !hechosAntes.includes('facturar')
-        if (faltaFacturar) {
-          await soltar(a)
-          log(`   ↻ Quedó en T - Facturación sin facturar: se reintenta Facturar en la siguiente vuelta hasta que pase a T - Pend. Entrega (intento ${errores(n)})`)
+        if (e.sinReintento) {
+          await dejarPendiente(a, `${motivo} · subió ${await quienSubio(a)}`)
+          log('   ⏸️  Queda pendiente en la Bandeja (sin reintento)')
         } else if (errores(n) < limite) {
           await soltar(a)
           log(`   ↻ ${hechosAntes.length ? `En CSHP ya se hizo: ${hechosAntes.join(', ')}; se REANUDA` : 'No se cambió nada en CSHP; se reintenta'} en la siguiente vuelta (intento ${errores(n)}/${limite})`)
